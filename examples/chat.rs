@@ -1,7 +1,7 @@
 #[macro_use]
 extern crate tracing;
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 use std::ops::Deref;
@@ -15,9 +15,11 @@ use rouille::Server;
 use rouille::{Request, Response};
 use str0m::change::{SdpAnswer, SdpOffer, SdpPendingOffer};
 use str0m::channel::{ChannelData, ChannelId};
-use str0m::media::{Direction, KeyframeRequest, MediaData, Mid, Rid};
+use str0m::format::PayloadParams;
+use str0m::media::{Direction, KeyframeRequest, MediaData, Mid, Pt, Rid};
 use str0m::media::{KeyframeRequestKind, MediaKind};
 use str0m::net::Protocol;
+use str0m::rtp::RtpPacket;
 use str0m::{net::Receive, Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcError};
 
 mod util;
@@ -81,6 +83,10 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
 
     let offer: SdpOffer = serde_json::from_reader(&mut data).expect("serialized offer");
     let mut rtc = Rtc::builder()
+        .set_rtp_mode(true)
+        .enable_vp8(true)
+        .enable_vp9(true)
+        .enable_h264(true)
         // Uncomment this to see statistics
         // .set_stats_interval(Some(Duration::from_secs(1)))
         // .set_ice_lite(true)
@@ -217,7 +223,9 @@ fn propagate(propagated: &Propagated, clients: &mut [Client]) {
 
         match &propagated {
             Propagated::TrackOpen(_, track_in) => client.handle_track_open(track_in.clone()),
-            Propagated::MediaData(_, data) => client.handle_media_data_out(client_id, data),
+            Propagated::RtpPacket(_, codec, packet) => {
+                client.handle_rtp_packet_out(client_id, packet, codec)
+            }
             Propagated::KeyframeRequest(_, req, origin, mid_in) => {
                 // Only one origin client handles the keyframe request.
                 if *origin == client.id {
@@ -268,8 +276,9 @@ struct Client {
     pending: Option<SdpPendingOffer>,
     cid: Option<ChannelId>,
     tracks_in: Vec<TrackInEntry>,
+    pts_to_mids: HashMap<Pt, Mid>,
+    pts_to_codecs: HashMap<Pt, PayloadParams>,
     tracks_out: Vec<TrackOut>,
-    chosen_rid: Option<Rid>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,8 +337,9 @@ impl Client {
             pending: None,
             cid: None,
             tracks_in: vec![],
+            pts_to_mids: HashMap::new(),
+            pts_to_codecs: HashMap::new(),
             tracks_out: vec![],
-            chosen_rid: None,
         }
     }
 
@@ -388,7 +398,31 @@ impl Client {
                     Propagated::Noop
                 }
                 Event::MediaAdded(e) => self.handle_media_added(e.mid, e.kind),
-                Event::MediaData(data) => self.handle_media_data_in(data),
+                Event::RtpPacket(mut rtp) => {
+                    let mid = {
+                        self.pts_to_mids
+                            .entry(rtp.header.payload_type)
+                            .or_insert_with(|| rtp.header.ext_vals.mid.expect("mid to exist"))
+                            .clone()
+                    };
+                    let codec = {
+                        self.pts_to_codecs
+                            .entry(rtp.header.payload_type)
+                            .or_insert_with(|| {
+                                self.rtc
+                                    .codec_config()
+                                    .params()
+                                    .iter()
+                                    .find(|c| c.pt() == rtp.header.payload_type)
+                                    .cloned()
+                                    .expect("codec to exist")
+                            })
+                            .clone()
+                    };
+
+                    rtp.header.ext_vals.mid = Some(mid);
+                    Propagated::RtpPacket(self.id, codec, rtp)
+                }
                 Event::KeyframeRequest(req) => self.handle_incoming_keyframe_req(req),
                 Event::ChannelOpen(cid, _) => {
                     self.cid = Some(cid);
@@ -432,41 +466,6 @@ impl Client {
         Propagated::TrackOpen(self.id, weak)
     }
 
-    fn handle_media_data_in(&mut self, data: MediaData) -> Propagated {
-        if !data.contiguous {
-            self.request_keyframe_throttled(data.mid, data.rid, KeyframeRequestKind::Fir);
-        }
-
-        Propagated::MediaData(self.id, data)
-    }
-
-    fn request_keyframe_throttled(
-        &mut self,
-        mid: Mid,
-        rid: Option<Rid>,
-        kind: KeyframeRequestKind,
-    ) {
-        let Some(mut writer) = self.rtc.writer(mid) else {
-            return;
-        };
-
-        let Some(track_entry) = self.tracks_in.iter_mut().find(|t| t.id.mid == mid) else {
-            return;
-        };
-
-        if track_entry
-            .last_keyframe_request
-            .map(|t| t.elapsed() < Duration::from_secs(1))
-            .unwrap_or(false)
-        {
-            return;
-        }
-
-        _ = writer.request_keyframe(rid, kind);
-
-        track_entry.last_keyframe_request = Some(Instant::now());
-    }
-
     fn handle_incoming_keyframe_req(&self, mut req: KeyframeRequest) -> Propagated {
         // Need to figure out the track_in mid that needs to handle the keyframe request.
         let Some(track_out) = self.tracks_out.iter().find(|t| t.mid() == Some(req.mid)) else {
@@ -475,10 +474,6 @@ impl Client {
         let Some(track_in) = track_out.track_in.upgrade() else {
             return Propagated::Noop;
         };
-
-        // This is the rid picked from incoming mediadata, and to which we need to
-        // send the keyframe request.
-        req.rid = self.chosen_rid;
 
         Propagated::KeyframeRequest(self.id, req, track_in.origin, track_in.mid)
     }
@@ -583,7 +578,8 @@ impl Client {
         self.tracks_out.push(track_out);
     }
 
-    fn handle_media_data_out(&mut self, origin: ClientId, data: &MediaData) {
+    fn handle_rtp_packet_out(&mut self, origin: ClientId, rtp: &RtpPacket, codec: &PayloadParams) {
+        let mid_in = rtp.header.ext_vals.mid.expect("mid to exist");
         // Figure out which outgoing track maps to the incoming media data.
         let Some(mid) = self
             .tracks_out
@@ -591,39 +587,42 @@ impl Client {
             .find(|o| {
                 o.track_in
                     .upgrade()
-                    .filter(|i| i.origin == origin && i.mid == data.mid)
+                    .filter(|i| i.origin == origin && i.mid == mid_in)
                     .is_some()
             })
             .and_then(|o| o.mid())
         else {
             return;
         };
+        let pt_in = rtp.header.payload_type;
 
-        if data.rid.is_some() && data.rid != Some("h".into()) {
-            // This is where we plug in a selection strategy for simulcast. For
-            // now either let rid=None through (which would be no simulcast layers)
-            // or "h" if we have simulcast (see commented out code in chat.html).
-            return;
-        }
+        let pt = self
+            .rtc
+            .codec_config()
+            .params()
+            .iter()
+            .find(|c| *c == codec)
+            .expect("pt to exist")
+            .pt();
 
-        // Remember this value for keyframe requests.
-        if self.chosen_rid != data.rid {
-            self.chosen_rid = data.rid;
-        }
+        let mut api = self.rtc.direct_api();
+        let tx = api
+            .stream_tx_by_mid(mid, None)
+            .expect("stream_tx_by_mid to exist");
 
-        let Some(writer) = self.rtc.writer(mid) else {
-            return;
-        };
-
-        // Match outgoing pt to incoming codec.
-        let Some(pt) = writer.match_params(data.params) else {
-            return;
-        };
-
-        if let Err(e) = writer.write(pt, data.network_time, data.time, data.data.clone()) {
-            warn!("Client ({}) failed: {:?}", *self.id, e);
-            self.rtc.disconnect();
-        }
+        let mut ext_vals = rtp.header.ext_vals.clone();
+        ext_vals.mid = Some(mid);
+        tx.write_rtp(
+            pt,
+            rtp.seq_no,
+            rtp.time.numer() as u32,
+            rtp.timestamp,
+            rtp.header.marker,
+            rtp.header.ext_vals.clone(),
+            true,
+            rtp.payload.clone(),
+        )
+        .expect("could not write_rtp");
     }
 
     fn handle_keyframe_request(&mut self, req: KeyframeRequest, mid_in: Mid) {
@@ -634,14 +633,12 @@ impl Client {
             return;
         }
 
-        let Some(mut writer) = self.rtc.writer(mid_in) else {
-            return;
-        };
+        let mut dapi = self.rtc.direct_api();
+        let rx = dapi
+            .stream_rx_by_mid(mid_in, req.rid)
+            .expect("stream_rx_by_mid to exist");
 
-        if let Err(e) = writer.request_keyframe(req.rid, req.kind) {
-            // This can fail if the rid doesn't match any media.
-            info!("request_keyframe failed: {:?}", e);
-        }
+        rx.request_keyframe(req.kind);
     }
 }
 
@@ -659,7 +656,7 @@ enum Propagated {
     TrackOpen(ClientId, Weak<TrackIn>),
 
     /// Data to be propagated from one client to another.
-    MediaData(ClientId, MediaData),
+    RtpPacket(ClientId, PayloadParams, RtpPacket),
 
     /// A keyframe request from one client to the source.
     KeyframeRequest(ClientId, KeyframeRequest, ClientId, Mid),
@@ -670,7 +667,7 @@ impl Propagated {
     fn client_id(&self) -> Option<ClientId> {
         match self {
             Propagated::TrackOpen(c, _)
-            | Propagated::MediaData(c, _)
+            | Propagated::RtpPacket(c, _, _)
             | Propagated::KeyframeRequest(c, _, _, _) => Some(*c),
             _ => None,
         }
