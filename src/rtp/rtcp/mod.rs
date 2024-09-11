@@ -101,7 +101,7 @@ impl Rtcp {
             let header: RtcpHeader = match buf.try_into() {
                 Ok(v) => v,
                 Err(e) => {
-                    debug!("{}", e);
+                    error!("Failed to parse RtcpHeader:{}", e);
                     break;
                 }
             };
@@ -116,7 +116,7 @@ impl Rtcp {
             let unpadded_length = if has_padding {
                 let pad = buf[full_length - 1] as usize;
                 if full_length < pad {
-                    debug!("buf.len() is less than padding: {} < {}", full_length, pad);
+                    error!("buf.len() is less than padding: {} < {}", full_length, pad);
                     break;
                 }
                 full_length - pad
@@ -126,7 +126,7 @@ impl Rtcp {
 
             match (&buf[..unpadded_length]).try_into() {
                 Ok(v) => feedback.push_back(v),
-                Err(e) => debug!("{}", e),
+                Err(e) => error!("Failed to parse RTCP: {}", e),
             }
 
             buf = &buf[full_length..];
@@ -419,7 +419,22 @@ impl<'a> TryFrom<&'a [u8]> for Rtcp {
                 };
 
                 match tlfb {
-                    TransportType::Nack => Rtcp::Nack(buf.try_into()?),
+                    TransportType::Nack => {
+                        let nack: Nack = buf.try_into()?;
+                        {
+                            let nacks: Vec<_> = nack
+                                .reports
+                                .clone()
+                                .into_iter()
+                                .map(|r| r.into_iter(SeqNo::from(r.pid as u64)))
+                                .flatten()
+                                .map(|s| s.as_u16())
+                                .collect();
+                            warn!("[RTCP] Recv NACK: ssrc = {}, nacked: {nacks:?}", nack.ssrc);
+                        }
+
+                        Rtcp::Nack(nack)
+                    },
                     TransportType::TransportWide => Rtcp::Twcc(buf.try_into()?),
                 }
             }
@@ -430,12 +445,20 @@ impl<'a> TryFrom<&'a [u8]> for Rtcp {
                 };
 
                 match plfb {
-                    PayloadType::PictureLossIndication => Rtcp::Pli(buf.try_into()?),
+                    PayloadType::PictureLossIndication => {
+                        let pli = buf.try_into()?;
+                        warn!("[RTCP] Recv Pli: {pli:?}");
+                        Rtcp::Pli(pli)
+                    },
                     PayloadType::SliceLossIndication => return Err("Ignore PayloadType type: SLI"),
                     PayloadType::ReferencePictureSelectionIndication => {
                         return Err("Ignore PayloadType type: RPSI")
                     }
-                    PayloadType::FullIntraRequest => Rtcp::Fir(buf.try_into()?),
+                    PayloadType::FullIntraRequest => {
+                        let fir = buf.try_into()?;
+                        warn!("[RTCP] Recv Fir: {fir:?}");
+                        Rtcp::Fir(fir)
+                    },
                     PayloadType::ApplicationLayer => {
                         if header.rtcp_type() == RtcpType::PayloadSpecificFeedback {
                             if let Ok(remb) = Remb::try_from(buf) {

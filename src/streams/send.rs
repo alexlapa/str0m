@@ -555,6 +555,7 @@ impl StreamTx {
             // The seq_no could simply be too old to exist in the buffer, in which
             // case we will not do a resend.
             let Some(pkt) = pkt else {
+                error!("Drop RTX for ssrc = {:?}, {:?}", self.ssrc, resend.seq_no.as_u16());
                 continue;
             };
 
@@ -576,6 +577,7 @@ impl StreamTx {
 
         let orig_seq_no = pkt.seq_no;
 
+        warn!("Send RTX for ssrc = {}, seq = {:?}", self.ssrc, orig_seq_no.as_u16());
         Some(NextPacket {
             kind: NextPacketKind::Resend(orig_seq_no),
             seq_no,
@@ -714,6 +716,7 @@ impl StreamTx {
         // Schedule all resends. They will be handled on next poll_packet
         for seq_no in iter {
             let Some(packet) = self.rtx_cache.get_cached_packet_by_seq_no(seq_no) else {
+                error!("Failed to RTX NACK ssrc = {:?}, {:?}", self.ssrc, seq_no.as_u16());
                 // Packet was not available in RTX cache, it has probably expired.
                 continue;
             };
