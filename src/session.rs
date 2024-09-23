@@ -487,12 +487,6 @@ impl Session {
         Rtcp::read_packet(&unprotected, &mut self.feedback_rx);
         let mut need_configure_pacer = false;
 
-        if let Some(raw_packets) = &mut self.raw_packets {
-            for fb in &self.feedback_rx {
-                raw_packets.push_back(Box::new(RawPacket::RtcpRx(fb.clone())));
-            }
-        }
-
         for fb in RtcpFb::from_rtcp(self.feedback_rx.drain(..)) {
             if let RtcpFb::Twcc(twcc) = fb {
                 trace!("Handle TWCC: {:?}", twcc);
@@ -520,6 +514,7 @@ impl Session {
                 stream.handle_rtcp(now, fb);
             } else {
                 let Some(stream) = self.streams.stream_tx(&fb.ssrc()) else {
+                    // error!("Failed to handle RTCP for unknown SSRC: {}", fb.ssrc());
                     continue;
                 };
                 stream.handle_rtcp(now, fb);

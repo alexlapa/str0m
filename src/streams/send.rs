@@ -543,8 +543,14 @@ impl StreamTx {
 
         // If we hit the cap, stop doing resends by clearing those we have queued.
         if ratio > 0.15_f32 {
-            self.resends.clear();
-            return None;
+            error!("[RTX]: Would clear RTX queue with ratio {ratio}, \
+                        transmitted: {}\
+                        retransmitted: {}",
+                self.stats.bytes_transmitted.sum(),
+                self.stats.bytes_retransmitted.sum()
+            );
+            // self.resends.clear();
+            // return None;
         }
 
         let seq_no = loop {
@@ -577,7 +583,7 @@ impl StreamTx {
 
         let orig_seq_no = pkt.seq_no;
 
-        warn!("Send RTX for ssrc = {}, seq = {:?}", self.ssrc, orig_seq_no.as_u16());
+        error!("Send RTX for ssrc = {}, seq = {:?}", self.ssrc, orig_seq_no.as_u16());
         Some(NextPacket {
             kind: NextPacketKind::Resend(orig_seq_no),
             seq_no,
@@ -713,6 +719,7 @@ impl StreamTx {
         let seq_no = self.rtx_cache.last_cached_seq_no()?;
         let iter = entries.flat_map(|n| n.into_iter(seq_no));
 
+        let mut resends =  Vec::new();
         // Schedule all resends. They will be handled on next poll_packet
         for seq_no in iter {
             let Some(packet) = self.rtx_cache.get_cached_packet_by_seq_no(seq_no) else {
@@ -726,8 +733,11 @@ impl StreamTx {
                 queued_at: now,
                 payload_size: packet.payload.len(),
             };
+            resends.push(seq_no.as_u16());
             self.resends.push_back(resend);
         }
+
+        error!("[RTX] Schedule resends: Ssrc: {}, {:?}", self.ssrc, resends);
 
         Some(())
     }
@@ -957,9 +967,10 @@ impl StreamTx {
     }
 
     pub(crate) fn reset_buffers(&mut self) {
+        error!("StreamTX::reset_buffers");
         self.send_queue.clear();
         self.rtx_cache.clear();
-        self.resends.clear();
+        // self.resends.clear();
         self.padding = 0;
     }
 }
