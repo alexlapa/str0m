@@ -575,14 +575,19 @@ impl StreamTx {
         }
 
         // bytes stats refer to the last second by default
-        self.stats.bytes_transmitted.purge_old(now);
-        self.stats.bytes_retransmitted.purge_old(now);
+        self.stats
+            .bytes_transmitted
+            .as_mut()
+            .unwrap()
+            .purge_old(now);
+        self.stats
+            .bytes_retransmitted
+            .as_mut()
+            .unwrap()
+            .purge_old(now);
 
         let bytes_transmitted = self.stats.bytes_transmitted.as_mut().unwrap().sum();
         let bytes_retransmitted = self.stats.bytes_retransmitted.as_mut().unwrap().sum();
-
-        let bytes_transmitted = self.stats.bytes_transmitted.sum();
-        let bytes_retransmitted = self.stats.bytes_retransmitted.sum();
         let ratio = bytes_retransmitted as f32 / (bytes_retransmitted + bytes_transmitted) as f32;
         let ratio = if ratio.is_finite() { ratio } else { 0_f32 };
         self.rtx_ratio = (ratio, now);
@@ -595,12 +600,13 @@ impl StreamTx {
 
             // If we hit the cap, stop doing resends by clearing those we have queued.
             if ratio > drop_ratio {
-                error!("[RTX]: Would clear RTX queue with ratio {ratio}, \
-                        transmitted: {}\
-                        retransmitted: {}",
-                self.stats.bytes_transmitted.sum(),
-                self.stats.bytes_retransmitted.sum()
-            );
+                error!(
+                    "[RTX]: Clear RTX queue with ssrc = {},
+                        ratio: {ratio} tx: {} rtx: {}",
+                    self.ssrc,
+                    self.stats.bytes_transmitted.as_mut().unwrap().sum(),
+                    self.stats.bytes_retransmitted.as_mut().unwrap().sum()
+                );
                 self.resends.clear();
                 return None;
             }
@@ -614,7 +620,11 @@ impl StreamTx {
             // The seq_no could simply be too old to exist in the buffer, in which
             // case we will not do a resend.
             let Some(pkt) = pkt else {
-                error!("Drop RTX for ssrc = {:?}, {:?}", self.ssrc, resend.seq_no.as_u16());
+                error!(
+                    "Drop RTX for ssrc = {:?}, {:?}",
+                    self.ssrc,
+                    resend.seq_no.as_u16()
+                );
                 continue;
             };
 
@@ -638,7 +648,11 @@ impl StreamTx {
 
         let orig_seq_no = pkt.seq_no;
 
-        error!("Send RTX for ssrc = {}, seq = {:?}", self.ssrc, orig_seq_no.as_u16());
+        error!(
+            "Send RTX for ssrc = {}, seq = {:?}",
+            self.ssrc,
+            orig_seq_no.as_u16()
+        );
         Some(NextPacket {
             kind: NextPacketKind::Resend(orig_seq_no),
             seq_no,

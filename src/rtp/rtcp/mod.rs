@@ -434,7 +434,7 @@ impl<'a> TryFrom<&'a [u8]> for Rtcp {
                         }
 
                         Rtcp::Nack(nack)
-                    },
+                    }
                     TransportType::TransportWide => Rtcp::Twcc(buf.try_into()?),
                 }
             }
@@ -449,16 +449,12 @@ impl<'a> TryFrom<&'a [u8]> for Rtcp {
                         let pli = buf.try_into()?;
                         warn!("[RTCP] Recv Pli: {pli:?}");
                         Rtcp::Pli(pli)
-                    },
+                    }
                     PayloadType::SliceLossIndication => return Err("Ignore PayloadType type: SLI"),
                     PayloadType::ReferencePictureSelectionIndication => {
                         return Err("Ignore PayloadType type: RPSI")
                     }
-                    PayloadType::FullIntraRequest => {
-                        let fir = buf.try_into()?;
-                        warn!("[RTCP] Recv Fir: {fir:?}");
-                        Rtcp::Fir(fir)
-                    },
+                    PayloadType::FullIntraRequest => Rtcp::Fir(buf.try_into()?),
                     PayloadType::ApplicationLayer => {
                         if header.rtcp_type() == RtcpType::PayloadSpecificFeedback {
                             if let Ok(remb) = Remb::try_from(buf) {
