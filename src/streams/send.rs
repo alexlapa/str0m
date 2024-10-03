@@ -648,11 +648,11 @@ impl StreamTx {
 
         let orig_seq_no = pkt.seq_no;
 
-        error!(
-            "Send RTX for ssrc = {}, seq = {:?}",
-            self.ssrc,
-            orig_seq_no.as_u16()
-        );
+        // error!(
+        //     "Send RTX for ssrc = {}, seq = {:?}",
+        //     self.ssrc,
+        //     orig_seq_no.as_u16()
+        // );
         Some(NextPacket {
             kind: NextPacketKind::Resend(orig_seq_no),
             seq_no,

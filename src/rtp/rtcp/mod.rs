@@ -447,7 +447,12 @@ impl<'a> TryFrom<&'a [u8]> for Rtcp {
                 match plfb {
                     PayloadType::PictureLossIndication => {
                         let pli = buf.try_into()?;
-                        warn!("[RTCP] Recv Pli: {pli:?}");
+                        error!("---------------------------------------------");
+                        error!("---------------------------------------------");
+                        error!("[RTCP] Recv Pli: {pli:?}");
+                        error!("---------------------------------------------");
+                        error!("---------------------------------------------");
+
                         Rtcp::Pli(pli)
                     }
                     PayloadType::SliceLossIndication => return Err("Ignore PayloadType type: SLI"),
