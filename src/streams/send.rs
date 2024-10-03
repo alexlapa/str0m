@@ -804,7 +804,7 @@ impl StreamTx {
             };
             self.resends.push_back(resend);
         }
-        error!("[RTX] Scheduled resends:" {resends_log:?});
+        error!("[RTX] Scheduled resends: {resends_log:?}");
 
         Some(())
     }
