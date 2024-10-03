@@ -789,14 +789,14 @@ impl StreamTx {
         // sequence number into the 64 bit we have in SeqNo.
         let seq_no = self.rtx_cache.last_cached_seq_no()?;
         let iter = entries.flat_map(|n| n.into_iter(seq_no));
-
+        let mut resends_log = Vec::new();
         // Schedule all resends. They will be handled on next poll_packet
         for seq_no in iter {
             let Some(packet) = self.rtx_cache.get_cached_packet_by_seq_no(seq_no) else {
                 // Packet was not available in RTX cache, it has probably expired.
                 continue;
             };
-
+            resends_log.push(seq_no);
             let resend = Resend {
                 seq_no,
                 queued_at: now,
@@ -804,6 +804,7 @@ impl StreamTx {
             };
             self.resends.push_back(resend);
         }
+        error!("[RTX] Scheduled resends:" {resends_log:?});
 
         Some(())
     }
