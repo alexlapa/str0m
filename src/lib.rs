@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 //! <image src="https://user-images.githubusercontent.com/227204/226143511-66fe5264-6ab7-47b9-9551-90ba7e155b96.svg" alt="str0m logo" ></image>
 //!
 //! A Sans I/O WebRTC implementation in Rust.
@@ -579,7 +581,6 @@
 #![allow(clippy::assertions_on_constants)]
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::get_first)]
-#![deny(missing_docs)]
 
 #[macro_use]
 extern crate tracing;
@@ -626,7 +627,7 @@ use io::DatagramRecvInner;
 mod packet;
 
 #[path = "rtp/mod.rs"]
-mod rtp_;
+pub mod rtp_;
 use rtp_::Bitrate;
 use rtp_::{Extension, ExtensionMap};
 
@@ -1837,6 +1838,7 @@ pub struct RtcConfig {
     send_buffer_video: usize,
     rtp_mode: bool,
     enable_raw_packets: bool,
+    to_log: bool,
 }
 
 impl RtcConfig {
@@ -2259,6 +2261,11 @@ impl RtcConfig {
         self
     }
 
+    pub fn to_log(mut self, to_log: bool) -> Self {
+        self.to_log = to_log;
+        self
+    }
+
     /// Create a [`Rtc`] from the configuration.
     pub fn build(self) -> Rtc {
         Rtc::new_from_config(self)
@@ -2282,6 +2289,7 @@ impl Default for RtcConfig {
             send_buffer_video: 1000,
             rtp_mode: false,
             enable_raw_packets: false,
+            to_log: false,
         }
     }
 }

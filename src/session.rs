@@ -1,6 +1,3 @@
-use std::collections::{HashMap, VecDeque};
-use std::time::{Duration, Instant};
-
 use crate::bwe::BweKind;
 use crate::crypto::KeyingMaterial;
 use crate::crypto::SrtpProfile;
@@ -13,12 +10,12 @@ use crate::media::{MediaAdded, MediaChanged};
 use crate::packet::SendSideBandwithEstimator;
 use crate::packet::{LeakyBucketPacer, NullPacer, Pacer, PacerImpl};
 use crate::rtp::RawPacket;
-use crate::rtp_::Direction;
 use crate::rtp_::Pt;
 use crate::rtp_::SeqNo;
 use crate::rtp_::SRTCP_OVERHEAD;
 use crate::rtp_::{extend_u16, RtpHeader, SessionId, TwccRecvRegister, TwccSendRegister};
 use crate::rtp_::{Bitrate, ExtensionMap, Mid, Rtcp, RtcpFb};
+use crate::rtp_::{Direction, TwccSendRecord};
 use crate::rtp_::{SrtpContext, Ssrc};
 use crate::stats::StatsSnapshot;
 use crate::streams::{RtpPacket, Streams};
@@ -26,6 +23,8 @@ use crate::util::{already_happened, not_happening, Soonest};
 use crate::Event;
 use crate::{net, Reason};
 use crate::{RtcConfig, RtcError};
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
 
 /// Minimum time we delay between sending nacks. This should be
 /// set high enough to not cause additional problems in very bad
@@ -112,14 +111,13 @@ impl Session {
         let (pacer, bwe) = if let Some(rate) = config.bwe_initial_bitrate {
             let pacer = PacerImpl::LeakyBucket(LeakyBucketPacer::new(rate * PACING_FACTOR * 2.0));
 
-            let send_side_bwe = SendSideBandwithEstimator::new(rate);
-            let bwe = Bwe {
-                bwe: send_side_bwe,
-                desired_bitrate: Bitrate::ZERO,
-                current_bitrate: rate,
-
-                last_emitted_estimate: Bitrate::ZERO,
-            };
+            let bwe = Bwe::new(
+                SendSideBandwithEstimator::new(rate),
+                Bitrate::ZERO,
+                rate,
+                Bitrate::ZERO,
+                config.to_log,
+            );
 
             (pacer, Some(bwe))
         } else {
@@ -748,7 +746,7 @@ impl Session {
         let twcc_at = self.twcc_at();
         let pacing_at = self.pacer.poll_timeout();
         let packetize_at = self.medias.iter().flat_map(|m| m.poll_timeout()).next();
-        let bwe_at = self.bwe.as_ref().map(|bwe| bwe.poll_timeout());
+        let bwe_at = self.bwe.as_mut().map(|bwe| bwe.poll_timeout());
         let paused_at = self.paused_at();
         let send_stream_at = self.streams.send_stream();
 
@@ -809,7 +807,7 @@ impl Session {
 
         snapshot.tx = snapshot.egress.values().map(|s| s.bytes).sum();
         snapshot.rx = snapshot.ingress.values().map(|s| s.bytes).sum();
-        snapshot.bwe_tx = self.bwe.as_ref().and_then(|bwe| bwe.last_estimate());
+        snapshot.bwe_tx = self.bwe.as_mut().and_then(|bwe| bwe.last_estimate());
 
         snapshot.egress_loss_fraction = self.twcc_tx_register.loss(Duration::from_secs(1), now);
         snapshot.ingress_loss_fraction = self.twcc_rx_register.loss();
@@ -853,7 +851,7 @@ impl Session {
     }
 
     fn configure_pacer(&mut self) {
-        let Some(bwe) = self.bwe.as_ref() else {
+        let Some(bwe) = self.bwe.as_mut() else {
             return;
         };
 
@@ -929,16 +927,55 @@ struct Bwe {
     bwe: SendSideBandwithEstimator,
     desired_bitrate: Bitrate,
     current_bitrate: Bitrate,
-
     last_emitted_estimate: Bitrate,
+    start: Instant,
+    // trace: String,
+    to_log: bool,
 }
 
 impl Bwe {
+    fn new(
+        bwe: SendSideBandwithEstimator,
+        desired_bitrate: Bitrate,
+        current_bitrate: Bitrate,
+        last_emitted_estimate: Bitrate,
+        to_log: bool,
+    ) -> Self {
+        if to_log {
+            let r = current_bitrate.as_f64();
+            let log = format!("let rate = Bitrate::from({r});");
+            println!("{log}");
+        }
+
+        Self {
+            bwe,
+            desired_bitrate,
+            current_bitrate,
+            last_emitted_estimate,
+            start: Instant::now(),
+            // trace,
+            to_log,
+        }
+    }
+
     fn handle_timeout(&mut self, now: Instant) {
+        if self.to_log {
+            let t = (now - self.start).as_nanos();
+            let log = format!("bwe.handle_timeout(s + Duration::from_nanos({t} as u64));");
+            println!("{log}");
+        }
+
         self.bwe.handle_timeout(now);
     }
 
     pub fn reset(&mut self, init_bitrate: Bitrate) {
+        if self.to_log {
+            let asd = init_bitrate.as_f64();
+            let log = &format!("bwe.reset(Bitrate::from({asd}));");
+
+            println!("{log}");
+        }
+
         self.bwe = SendSideBandwithEstimator::new(init_bitrate);
     }
 
@@ -947,30 +984,91 @@ impl Bwe {
         records: impl Iterator<Item = &'t crate::rtp_::TwccSendRecord>,
         now: Instant,
     ) {
-        self.bwe.update(records, now);
+        let records: Vec<_> = records.cloned().collect();
+        if self.to_log {
+            let mut recs = String::from("");
+            for r in &records {
+                let recv_report = match r.recv_report.clone() {
+                    None => String::from("None"),
+                    Some(qqq) => {
+                        let local_recv_time = (qqq.local_recv_time - self.start).as_nanos();
+                        let remote_recv_time = match qqq.remote_recv_time {
+                            None => String::from("None"),
+                            Some(remote_recv_time) => {
+                                let remote_recv_time = (remote_recv_time - self.start).as_nanos();
+                                format!("Some(s + Duration::from_nanos({remote_recv_time} as u64))")
+                            }
+                        };
+
+                        format!("Some(TwccRecvReport {{ local_recv_time: s + Duration::from_nanos({local_recv_time} as u64), remote_recv_time: {remote_recv_time} }})")
+                    }
+                };
+                let local_send_time = (r.local_send_time - self.start).as_nanos();
+                recs += &format!("TwccSendRecord {{ seq: SeqNo({}), local_send_time: s + Duration::from_nanos({local_send_time} as u64), size: {}, recv_report: {recv_report} }}, ", r.seq.0, r.size);
+            }
+            let t = (now - self.start).as_nanos();
+            let log =
+                format!("bwe.update(vec![{recs}].iter(),s + Duration::from_nanos({t} as u64));");
+            println!("{log}");
+        }
+
+        self.bwe.update(records.iter(), now);
     }
 
     fn poll_estimate(&mut self) -> Option<Bitrate> {
-        let estimate = self.bwe.last_estimate()?;
+        let Some(estimate) = self.bwe.last_estimate() else {
+            if self.to_log {
+                // let log = "assert_eq!(bwe.poll_estimate(), None);";
+                // println!("{log}");
+            }
+
+            return None;
+        };
 
         let min = self.last_emitted_estimate * (1.0 - ESTIMATE_TOLERANCE);
         let max = self.last_emitted_estimate * (1.0 + ESTIMATE_TOLERANCE);
 
         if estimate < min || estimate > max {
             self.last_emitted_estimate = estimate;
+
+            if self.to_log {
+                let asd = estimate.as_f64();
+                let log = format!("assert_eq!(bwe.poll_estimate(), Some(Bitrate::from({asd})));");
+                println!("{log}");
+            }
+
             Some(estimate)
         } else {
             // Estimate is within tolerances.
+            if self.to_log {
+                // let log = "assert_eq!(bwe.poll_estimate(), None);";
+                // println!("{log}");
+            }
+
             None
         }
     }
 
-    fn poll_timeout(&self) -> Instant {
-        self.bwe.poll_timeout()
+    fn poll_timeout(&mut self) -> Instant {
+        let r = self.bwe.poll_timeout();
+
+        if self.to_log {
+            // let t = (r - self.start).as_nanos();
+            // let log =
+            //     format!("assert_eq!(bwe.poll_timeout(), s + Duration::from_nanos({t} as u64));");
+            // println!("{log}");
+        }
+        r
     }
 
-    fn last_estimate(&self) -> Option<Bitrate> {
+    fn last_estimate(&mut self) -> Option<Bitrate> {
         self.bwe.last_estimate()
+    }
+}
+
+impl Drop for Bwe {
+    fn drop(&mut self) {
+        // error!("{}", self.trace);
     }
 }
 
@@ -995,5 +1093,28 @@ fn update_max_seq(map: &mut HashMap<Ssrc, SeqNo>, ssrc: Ssrc, seq_no: SeqNo) {
     let current = map.entry(ssrc).or_insert(seq_no);
     if seq_no > *current {
         *current = seq_no;
+    }
+}
+
+#[cfg(test)]
+mod asd {
+    use crate::rtp_::{TwccRecvReport, TwccSendRecord};
+    use crate::{
+        session::{Bwe, SendSideBandwithEstimator, SeqNo},
+        Bitrate,
+    };
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn asdasd() {
+        let s = Instant::now();
+        let rate = Bitrate::from(18446744073709552000.0);
+        let mut bwe = Bwe::new(
+            SendSideBandwithEstimator::new(rate),
+            Bitrate::ZERO,
+            rate,
+            Bitrate::ZERO,
+            false,
+        );
     }
 }

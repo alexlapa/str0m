@@ -94,7 +94,10 @@ impl Iterator for TwccIter {
         let instant = match status {
             PacketStatus::NotReceived => None,
             PacketStatus::ReceivedSmallDelta => match self.twcc.delta.pop_front()? {
-                Delta::Small(v) => Some(self.time_base + Duration::from_micros(250 * v as u64)),
+                Delta::Small(v) => {
+                    // asdasdasdasdasdasdasdasdasdasdasdasdasdasdasdasdasd
+                    Some(self.time_base + Duration::from_micros(250 * v as u64))
+                }
                 Delta::Large(_) => panic!("Incorrect large delta size"),
             },
             PacketStatus::ReceivedLargeOrNegativeDelta => match self.twcc.delta.pop_front()? {
@@ -1010,18 +1013,18 @@ impl<'a> IntoIterator for &'a TwccSendRegister {
 }
 
 /// Record for a send entry in twcc.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TwccSendRecord {
     /// Twcc sequence number for a packet we sent.
-    seq: SeqNo,
+    pub seq: SeqNo,
 
     /// The (local) time we sent the packet represented by seq.
-    local_send_time: Instant,
+    pub local_send_time: Instant,
 
     /// Size in bytes of the payload sent.
-    size: u16,
+    pub size: u16,
 
-    recv_report: Option<TwccRecvReport>,
+    pub recv_report: Option<TwccRecvReport>,
 }
 
 impl TwccSendRecord {
@@ -1051,13 +1054,13 @@ impl TwccSendRecord {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TwccRecvReport {
     ///  The (local) time we received confirmation the other side received the seq.
-    local_recv_time: Instant,
+    pub local_recv_time: Instant,
 
     /// The remote time the other side received the seq.
-    remote_recv_time: Option<Instant>,
+    pub remote_recv_time: Option<Instant>,
 }
 
 impl TwccSendRegister {

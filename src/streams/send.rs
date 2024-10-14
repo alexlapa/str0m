@@ -545,7 +545,7 @@ impl StreamTx {
         let ratio = self.rtx_ratio_downsampled(now);
 
         // If we hit the cap, stop doing resends by clearing those we have queued.
-        if ratio > 0.15_f32 {
+        if ratio > 1.15_f32 {
             self.resends.clear();
             return None;
         }
