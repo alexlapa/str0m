@@ -13,6 +13,7 @@ mod trendline_estimator;
 use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::rtp_::{Bitrate, DataSize, SeqNo, TwccSendRecord};
@@ -76,7 +77,9 @@ impl SendSideBandwithEstimator {
         &mut self,
         records: impl Iterator<Item = &'t TwccSendRecord>,
         now: Instant,
+        from: SocketAddr
     ) {
+        let mut delay_variations = Vec::new();
         let mut acked: Vec<AckedPacket> = Vec::new();
 
         let mut max_rtt = None;
@@ -100,6 +103,7 @@ impl SendSideBandwithEstimator {
                 crate::packet::bwe::macros::log_delay_variation!(delay_variation.delay_delta);
 
                 // Got a new delay variation, add it to the trendline
+                delay_variations.push(delay_variation);
                 self.trendline_estimator
                     .add_delay_observation(delay_variation, now);
             }
@@ -110,6 +114,8 @@ impl SendSideBandwithEstimator {
         }
 
         let new_hypothesis = self.trendline_estimator.hypothesis();
+
+        error!("From {from}, delay_variations: {delay_variations:?}, max_rtt = {max_rtt:?}, new_hypothesis = {new_hypothesis:?}");
 
         self.update_estimate(
             new_hypothesis,
