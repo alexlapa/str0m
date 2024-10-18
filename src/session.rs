@@ -508,7 +508,7 @@ impl Session {
 
         for fb in RtcpFb::from_rtcp(self.feedback_rx.drain(..)) {
             if let RtcpFb::Twcc(twcc) = fb {
-                error!("Handle TWCC from [{from}]: {twcc:?}");
+                trace!("Handle TWCC: {:?}", twcc);
                 let range = self.twcc_tx_register.apply_report(twcc, now);
 
                 if let Some(bwe) = &mut self.bwe {
