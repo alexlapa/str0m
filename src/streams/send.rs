@@ -465,9 +465,13 @@ impl StreamTx {
 
         // These need to match `Extension::is_supported()` so we are sending what we are
         // declaring we support.
-        header.ext_vals.abs_send_time = Some(now);
-        header.ext_vals.transport_cc = Some(*twcc as u16);
-        *twcc += 1;
+        if exts.has_abs_send_time() {
+            header.ext_vals.abs_send_time = Some(now);
+        }
+        if exts.has_twcc() {
+            header.ext_vals.transport_cc = Some(*twcc as u16);
+            *twcc += 1;
+        }
 
         buf.resize(DATAGRAM_MAX_PACKET_SIZE, 0);
 

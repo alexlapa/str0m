@@ -733,8 +733,10 @@ impl Session {
 
         let protected = srtp_tx.protect_rtp(buf, &header, *seq_no);
 
-        self.twcc_tx_register
-            .register_seq(twcc_seq.into(), now, payload_size);
+        if exts.has_twcc() {
+            self.twcc_tx_register
+                .register_seq(twcc_seq.into(), now, payload_size);
+        }
 
         // Technically we should wait for the next handle_timeout, but this speeds things up a bit
         // avoiding an extra poll_timeout.

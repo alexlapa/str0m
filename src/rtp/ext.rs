@@ -373,6 +373,16 @@ impl ExtensionMap {
         exts
     }
 
+    /// asdasd
+    pub fn has_twcc(&self) -> bool {
+        self.id_of(Extension::TransportSequenceNumber).is_some()
+    }
+
+    /// asdasdasd
+    pub fn has_abs_send_time(&self) -> bool {
+        self.id_of(Extension::AbsoluteSendTime).is_some()
+    }
+
     pub(crate) fn clear(&mut self) {
         for i in &mut self.0 {
             *i = None;

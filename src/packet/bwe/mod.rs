@@ -115,7 +115,7 @@ impl SendSideBandwithEstimator {
 
         let new_hypothesis = self.trendline_estimator.hypothesis();
 
-        error!("From {from}, delay_variations: {delay_variations:?}, max_rtt = {max_rtt:?}, new_hypothesis = {new_hypothesis:?}");
+        error!("From {from}, delay_variations: {delay_variations:?}, max_rtt = {max_rtt:?}, new_hypothesis = {new_hypothesis:?}, now = {now:?}");
 
         self.update_estimate(
             new_hypothesis,
