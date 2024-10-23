@@ -13,7 +13,7 @@ use crate::media::Media;
 use crate::media::{MediaAdded, MediaChanged};
 use crate::packet::SendSideBandwithEstimator;
 use crate::packet::{LeakyBucketPacer, NullPacer, Pacer, PacerImpl};
-use crate::rtp::RawPacket;
+use crate::rtp::{Extension, RawPacket};
 use crate::rtp_::Direction;
 use crate::rtp_::Pt;
 use crate::rtp_::SeqNo;
@@ -206,7 +206,7 @@ impl Session {
 
     pub fn handle_timeout(&mut self, now: Instant) -> Result<(), RtcError> {
         // Payload any waiting samples
-        self.do_payload(now)?;
+        self.do_payload()?;
 
         let sender_ssrc = self.streams.first_ssrc_local();
 
@@ -707,7 +707,13 @@ impl Session {
 
         let params = &self.codec_config;
         let exts = media.remote_extmap();
-        let receipt = stream.poll_packet(now, exts, &mut self.twcc, params, buf)?;
+
+        // TWCC might not be enabled for this m-line. Firefox do use TWCC, but not
+        // for audio. This is indiciated via the SDP.
+        let twcc_enabled = exts.id_of(Extension::TransportSequenceNumber).is_some();
+        let twcc = twcc_enabled.then_some(&mut self.twcc);
+
+        let receipt = stream.poll_packet(now, exts, twcc, params, buf)?;
 
         let PacketReceipt {
             header,
@@ -733,7 +739,7 @@ impl Session {
 
         let protected = srtp_tx.protect_rtp(buf, &header, *seq_no);
 
-        if exts.has_twcc() {
+        if twcc_enabled {
             self.twcc_tx_register
                 .register_seq(twcc_seq.into(), now, payload_size);
         }
@@ -885,9 +891,9 @@ impl Session {
         self.medias.iter_mut().find(|m| m.mid() == mid)
     }
 
-    fn do_payload(&mut self, now: Instant) -> Result<(), RtcError> {
+    fn do_payload(&mut self) -> Result<(), RtcError> {
         for m in &mut self.medias {
-            m.do_payload(now, &mut self.streams, &self.codec_config)?;
+            m.do_payload(&mut self.streams, &self.codec_config)?;
         }
 
         Ok(())
