@@ -955,7 +955,7 @@ impl Bwe {
         &mut self,
         records: impl Iterator<Item = &'t crate::rtp_::TwccSendRecord>,
         now: Instant,
-        from: SocketAddr
+        from: SocketAddr,
     ) {
         self.bwe.update(records, now, from);
     }

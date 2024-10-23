@@ -468,9 +468,9 @@ impl StreamTx {
         if exts.has_abs_send_time() {
             header.ext_vals.abs_send_time = Some(now);
         }
-        if exts.has_twcc() {
-    // TWCC might not be enabled for this m-line.
-        if let Some(twcc) = twcc {        header.ext_vals.transport_cc = Some(*twcc as u16);
+        // TWCC might not be enabled for this m-line.
+        if let Some(twcc) = twcc {
+            header.ext_vals.transport_cc = Some(*twcc as u16);
             *twcc += 1;
         }
 
