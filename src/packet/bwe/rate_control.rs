@@ -22,6 +22,7 @@ const MAX_ESTIMATE_RATIO: f64 = 1.5;
 /// * The observed received bitrate(via TWCC feddback).
 /// * RTT.
 /// * Congestion estimates from the delay controller.
+#[derive(Debug)]
 pub(super) struct RateControl {
     state: State,
 

@@ -15,6 +15,7 @@ const K_DOWN: f64 = 0.039;
 
 const DELAY_COUNT_RANGE: RangeInclusive<usize> = 60..=1000;
 
+#[derive(Debug)]
 pub(super) struct TrendlineEstimator {
     /// The window size in packets
     window_size: usize,
@@ -284,6 +285,7 @@ struct Timing {
     smoothed_delay_ms: f64,
 }
 
+#[derive(Debug)]
 struct Overuse {
     count: usize,
     time_overusing: Duration,

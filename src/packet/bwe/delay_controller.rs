@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::rtp_::Bitrate;
@@ -19,6 +20,7 @@ const MAX_TWCC_GAP: Duration = Duration::from_millis(500);
 /// This controller attempts to estimate the available send bandwidth by looking at the variations
 /// in packet arrival times for groups of packets sent together. Broadly, if the delay variation is
 /// increasing this indicates overuse.
+#[derive(Debug)]
 pub struct DelayController {
     arrival_group_accumulator: ArrivalGroupAccumulator,
     trendline_estimator: TrendlineEstimator,
@@ -57,9 +59,11 @@ impl DelayController {
         acked: &[AckedPacket],
         acked_bitrate: Option<Bitrate>,
         now: Instant,
+        from: SocketAddr,
     ) -> Option<Bitrate> {
         let mut max_rtt = None;
 
+        let mut delay_variations = Vec::new();
         for acked_packet in acked {
             max_rtt = max_rtt.max(Some(acked_packet.rtt()));
             if let Some(delay_variation) = self
@@ -68,6 +72,7 @@ impl DelayController {
             {
                 crate::packet::bwe::macros::log_delay_variation!(delay_variation.delay_delta);
 
+                delay_variations.push(delay_variation);
                 // Got a new delay variation, add it to the trendline
                 self.trendline_estimator
                     .add_delay_observation(delay_variation, now);
@@ -82,6 +87,19 @@ impl DelayController {
 
         self.update_estimate(new_hypothesis, acked_bitrate, self.mean_max_rtt, now);
         self.last_twcc_report = now;
+
+        error!(
+            "From {from}, \
+            new_hypothesis = {new_hypothesis:?}, \
+            acked_bitrate = {acked_bitrate:?}, \
+            mean_max_rtt = {:?}, \
+            now = {now:?}, \
+            acked = {acked:?}, \
+            delay_variations = {delay_variations:?}, \
+            estimator = {:?}",
+            self.mean_max_rtt,
+            self.trendline_estimator
+        );
 
         self.last_estimate
     }
