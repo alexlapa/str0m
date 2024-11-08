@@ -128,7 +128,7 @@ impl SendSideBandwithEstimator {
                 .map(|l| l.get_loss_based_result().bandwidth_estimate);
 
             error!(
-                "From {from}, \
+                "From [{from}], \
                 acked_bitrate = {acked_bitrate:?}, \
                 delay_estimate = {delay_estimate:?}, \
                 loss_estimate = {loss_estimate:?}"

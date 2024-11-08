@@ -89,17 +89,17 @@ impl DelayController {
         self.last_twcc_report = now;
 
         error!(
-            "From {from}, \
+            "From [{from}], \
             new_hypothesis = {new_hypothesis:?}, \
             acked_bitrate = {acked_bitrate:?}, \
             mean_max_rtt = {:?}, \
             now = {now:?}, \
             acked = {acked:?}, \
-            delay_variations = {delay_variations:?}, \
-            estimator = {:?}",
-            self.mean_max_rtt,
-            self.trendline_estimator
+            delay_variations = {delay_variations:?}",
+            self.mean_max_rtt
         );
+        //     estimator = {:?}",
+        //     self.trendline_estimator
 
         self.last_estimate
     }
