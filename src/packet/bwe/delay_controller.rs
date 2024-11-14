@@ -84,20 +84,6 @@ impl DelayController {
         let new_hypothesis = self.trendline_estimator.hypothesis();
 
         self.update_estimate(new_hypothesis, acked_bitrate, self.mean_max_rtt, now);
-
-        if let Some(acked_bitrate) = acked_bitrate {
-            self.rate_control.update(
-                new_hypothesis.into(),
-                acked_bitrate,
-                self.mean_max_rtt,
-                now
-            );
-            let estimated_rate = self.rate_control.estimated_bitrate();
-
-            self.last_estimate = Some(estimated_rate);
-        }
-        self.next_timeout = now + UPDATE_INTERVAL;
-
         self.last_twcc_report = now;
 
         error!(
@@ -107,8 +93,8 @@ impl DelayController {
             mean_max_rtt = {:?}, \
             now = {now:?}, \
             estimate = {:?}, \
-            delay_variations = {delay_variations:?}, \
-            {} => {}",
+            {} => {}, \
+            delay_variations = {delay_variations:?}",
             self.mean_max_rtt,
             self.last_estimate,
             acked.len(),
@@ -123,27 +109,27 @@ impl DelayController {
     }
 
     pub(crate) fn handle_timeout(&mut self, acked_bitrate: Option<Bitrate>, now: Instant) {
-        // if !self.trendline_hypothesis_valid(now) {
-        //     // We haven't received a TWCC report in a while. The trendline hypothesis can
-        //     // no longer be considered valid. We need another TWCC report before we can update
-        //     // estimates.
-        //     let next_timeout_in = self
-        //         .mean_max_rtt
-        //         .unwrap_or(MAX_TWCC_GAP)
-        //         .min(UPDATE_INTERVAL);
-        //
-        //     // Set this even if we didn't update, otherwise we get stuck in a poll -> handle loop
-        //     // that starves the run loop.
-        //     self.next_timeout = now + next_timeout_in;
-        //     return;
-        // }
-        //
-        // self.update_estimate(
-        //     self.trendline_estimator.hypothesis(),
-        //     acked_bitrate,
-        //     self.mean_max_rtt,
-        //     now,
-        // );
+        if !self.trendline_hypothesis_valid(now) {
+            // We haven't received a TWCC report in a while. The trendline hypothesis can
+            // no longer be considered valid. We need another TWCC report before we can update
+            // estimates.
+            let next_timeout_in = self
+                .mean_max_rtt
+                .unwrap_or(MAX_TWCC_GAP)
+                .min(UPDATE_INTERVAL);
+
+            // Set this even if we didn't update, otherwise we get stuck in a poll -> handle loop
+            // that starves the run loop.
+            self.next_timeout = now + next_timeout_in;
+            return;
+        }
+
+        self.update_estimate(
+            self.trendline_estimator.hypothesis(),
+            acked_bitrate,
+            self.mean_max_rtt,
+            now,
+        );
     }
 
     /// Get the latest estimate.
