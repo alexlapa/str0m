@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use crate::packet::bwe::macros::log_inherent_loss;
 use crate::packet::bwe::macros::log_loss_based_bitrate_estimate;
+use crate::packet::bwe::macros::log_loss_bw_limit_in_window;
 use crate::rtp_::TwccSendRecord;
 use crate::{Bitrate, DataSize};
 
@@ -150,6 +151,7 @@ impl LossController {
         self.current_estimate.loss_limited_bandwidth = bandwidth_estimate;
     }
 
+    /// Update the acknowledged bitrate based on TWCC feedback.
     pub fn set_acknowledged_bitrate(&mut self, acknowledged_bitrate: Bitrate) {
         self.acknowledged_bitrate = acknowledged_bitrate;
     }
@@ -264,6 +266,7 @@ impl LossController {
                 .max(loss_limited_bandwidth * CONF_MAX_INCREASE_FACTOR);
 
             self.recovering_after_loss_timestamp = self.last_send_time_most_recent_observation;
+            log_loss_bw_limit_in_window!(self.bandwidth_limit_in_current_window.as_f64());
         }
     }
 
@@ -910,7 +913,7 @@ impl Default for Config {
             newton_step_size: 0.75,
             not_increase_if_inherent_loss_less_than_average_loss: true,
             delayed_increase_window: Duration::from_millis(1000),
-            bandwidth_rampup_upper_bound_factor: 1000000.0,
+            bandwidth_rampup_upper_bound_factor: 1_000_000.0,
             candidate_factor: [1.02, 1.0, 0.95],
             append_acknowledged_rate_candidate: true,
             append_delay_based_estimate_candidate: true,
@@ -979,15 +982,16 @@ mod test {
         lbc.set_acknowledged_bitrate(acknowledged_bitrate);
         lbc.set_bandwidth_estimate(Bitrate::from(1_250_000)); // 1.25Mbps
 
-        let mut pkt_builder = PacketBuilder::new(Instant::now()).num_packets(11);
+        let mut pkt_builder = PacketBuilder::new(Instant::now()).num_packets(26);
 
-        // 10 seconds of sending at ~1Mbps
-        for _ in 0..200 {
-            let result = pkt_builder.build_packets();
-            lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+        // A single observation at 1Mbps
+        let result = pkt_builder.build_packets();
+        lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+        pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
 
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
-        }
+        // A single observation at 1Mbps
+        let result = pkt_builder.build_packets();
+        lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
 
         let LossBasedBweResult {
             bandwidth_estimate,
@@ -1015,14 +1019,16 @@ mod test {
 
         let mut pkt_builder = PacketBuilder::new(Instant::now())
             .with_loss(0.05)
-            .num_packets(5);
+            .num_packets(26);
 
-        // 10 seconds of sending at ~1Mbps(5 packets of 1200 bytes every 50ms)
-        for _ in 0..200 {
+        // It takes a while for the maximum likelihood estimation to react to the inherent loss
+        // this is why we need quite a few observations before the estimate increases to the delay
+        // based bound
+        // 40 observations(10 seconds) at 1Mbps
+        for _ in 0..40 {
             let result = pkt_builder.build_packets();
             lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
-
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
         }
 
         let LossBasedBweResult {
@@ -1052,23 +1058,25 @@ mod test {
 
         let mut pkt_builder = PacketBuilder::new(Instant::now())
             .with_loss(0.05)
-            .num_packets(5);
+            .num_packets(26);
 
-        // 10 seconds of sending at ~1Mbps
-        for _ in 0..10 {
+        // It takes a while for the maximum likelihood estimation to react to the inherent loss
+        // this is why we need quite a few observations before the estimate increases to the delay
+        // based bound and is stable.
+        // 40 observations(10 seconds) at 1Mbps
+        for _ in 0..40 {
             let result = pkt_builder.build_packets();
             lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
-
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
         }
 
         pkt_builder = pkt_builder.with_loss(0.9);
-        // Loss spike
-        for _ in 0..20 {
+        // Loss spike(1second at 90% loss)
+        for _ in 0..4 {
             let result = pkt_builder.build_packets();
             lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
 
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
         }
 
         let LossBasedBweResult {
@@ -1098,33 +1106,33 @@ mod test {
 
         let mut pkt_builder = PacketBuilder::new(Instant::now())
             .with_loss(0.05)
-            .num_packets(5);
+            .num_packets(26);
 
-        // 10 seconds of sending at ~1Mbps
-        for _ in 0..200 {
+        // It takes a while for the maximum likelihood estimation to react to the inherent loss
+        // this is why we need quite a few observations before the estimate increases to the delay
+        // based bound and is stable.
+        // 40 observations(10 seconds) at 1Mbps
+        for _ in 0..40 {
             let result = pkt_builder.build_packets();
             lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
-
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
         }
 
-        pkt_builder = pkt_builder.with_loss(0.9);
         // Loss spike
-        for _ in 0..4 {
-            let result = pkt_builder.build_packets();
-            lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+        pkt_builder = pkt_builder.with_loss(0.9);
+        let result = pkt_builder.build_packets();
+        lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+        pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
 
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
-        }
-
+        pkt_builder = pkt_builder.with_loss(0.05);
         // Set loss back to 5% and gradually ramp up the bitrate
-        for i in 0..200 {
-            pkt_builder = pkt_builder.with_loss(0.05).num_packets(1 + i / 50);
+        for i in 0..40 {
+            pkt_builder = pkt_builder.num_packets(6 + i / 2);
 
             let result = pkt_builder.build_packets();
             lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
 
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
         }
 
         let LossBasedBweResult {
@@ -1155,14 +1163,17 @@ mod test {
 
         let mut pkt_builder = PacketBuilder::new(Instant::now())
             .with_loss(0.05)
-            .num_packets(5);
+            .num_packets(26);
 
-        // 10 seconds of sending at ~1Mbps
-        for _ in 0..200 {
+        // It takes a while for the maximum likelihood estimation to react to the inherent loss
+        // this is why we need quite a few observations before the estimate increases to the delay
+        // based bound
+        // 40 observations(10 seconds) at 1Mbps
+        for _ in 0..40 {
             let result = pkt_builder.build_packets();
             lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
 
-            pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
         }
 
         // Gradual increase
@@ -1173,7 +1184,7 @@ mod test {
                 let result = pkt_builder.build_packets();
                 lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
 
-                pkt_builder = pkt_builder.forward_time(Duration::from_millis(50));
+                pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
             }
         }
 
@@ -1188,6 +1199,90 @@ mod test {
             "A gradual overuse should result in a lowered estimate"
         );
         assert_eq!(state, LossControllerState::Decreasing);
+    }
+
+    #[test]
+    fn test_loss_limited_window() {
+        let mut lbc = LossController::new();
+        lbc.set_min_bitrate(Bitrate::kbps(50));
+        lbc.set_max_bitrate(Bitrate::gbps(1));
+
+        let acknowledged_bitrate = Bitrate::mbps(1); // 1 Mbps
+        lbc.set_acknowledged_bitrate(acknowledged_bitrate);
+        lbc.set_bandwidth_estimate(Bitrate::kbps(1_250)); // 1.25Mbps
+
+        let mut pkt_builder = PacketBuilder::new(Instant::now()).num_packets(25);
+
+        {
+            // Initial observation with no loss
+            let result = pkt_builder.build_packets();
+            lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
+        }
+
+        let loss_limited = {
+            // loss spike observation at 50%
+            pkt_builder = pkt_builder.with_loss(0.5);
+            let result = pkt_builder.build_packets();
+            lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
+
+            let LossBasedBweResult {
+                bandwidth_estimate,
+                state,
+            } = lbc.get_loss_based_result();
+
+            let estimate = bandwidth_estimate.expect("Should have an estimate");
+            assert!(
+                estimate < Bitrate::kbps(500),
+                "A loss spike should've caused a drop in estimate"
+            );
+            assert_eq!(state, LossControllerState::Decreasing);
+
+            estimate
+        };
+
+        {
+            // Recovery observation at 0% loss
+            pkt_builder = pkt_builder.with_loss(0.0);
+            let result = pkt_builder.build_packets();
+            // Lower acknowledged bitrate to simulate reacting to estimate due to spike
+            lbc.set_acknowledged_bitrate(Bitrate::kbps(300));
+            lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+            pkt_builder = pkt_builder.forward_time(Duration::from_millis(250));
+
+            let LossBasedBweResult {
+                bandwidth_estimate,
+                state,
+            } = lbc.get_loss_based_result();
+
+            let estimate = bandwidth_estimate.expect("Should have an estimate");
+            assert!(
+                estimate > loss_limited && estimate < Bitrate::mbps(1),
+                "During the recovery window after a loss spike the estimate should increase, but be bounded"
+            );
+            assert_eq!(state, LossControllerState::Decreasing);
+        }
+
+        {
+            // Another recovery observation at 0% loss, outside of the limit window
+            pkt_builder = pkt_builder.num_packets(80);
+            let result = pkt_builder.build_packets();
+            lbc.set_acknowledged_bitrate(Bitrate::mbps(1));
+            lbc.update_bandwidth_estimate(&result, Bitrate::bps(1_500_000));
+
+            let LossBasedBweResult {
+                bandwidth_estimate,
+                state,
+            } = lbc.get_loss_based_result();
+
+            let estimate = bandwidth_estimate.expect("Should have an estimate");
+            assert!(
+                estimate == Bitrate::bps(1_000_000),
+                "Eventually the estimate should recover but still remain bounded until the average loss caused by spike ages out"
+            );
+            assert_eq!(state, LossControllerState::Decreasing);
+        }
     }
 
     struct PacketBuilder {
