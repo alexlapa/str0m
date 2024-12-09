@@ -135,7 +135,7 @@ impl DelayController {
             self.add_max_rtt(rtt);
         }
 
-        let new_hypothesis = self.trendline_estimator.hypothesis();
+        let new_hypothesis: BandwidthUsage = self.cpp_trendline_estimator.lock().unwrap().as_mut().unwrap().State().into();
 
         self.update_estimate(new_hypothesis, acked_bitrate, self.mean_max_rtt, now);
         self.last_twcc_report = now;
