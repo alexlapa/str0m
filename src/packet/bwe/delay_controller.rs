@@ -89,6 +89,8 @@ impl DelayController {
         // }
 
         for acked_packet in acked {
+            self.remote_started_at.get_or_insert(acked_packet.remote_recv_time);
+
             let send_time_us = (acked_packet.local_send_time - self.started_at).as_micros() as u64;
             let arrival_time_us = (acked_packet.remote_recv_time - self.remote_started_at.unwrap())
                 .as_micros() as u64;
