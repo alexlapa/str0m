@@ -8,7 +8,7 @@ use super::AckedPacket;
 const BURST_TIME_INTERVAL: Duration = Duration::from_millis(5);
 
 #[derive(Debug, Default)]
-pub struct ArrivalGroup {
+struct ArrivalGroup {
     first: Option<(SeqNo, Instant, Instant)>,
     last_seq_no: Option<SeqNo>,
     last_local_send_time: Option<Instant>,

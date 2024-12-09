@@ -35,6 +35,7 @@ _internal_dont_use_log_stats = []
 _internal_test_exports = []
 
 [dependencies]
+cxx = "1.0"
 thiserror = "1.0.69"
 tracing = "0.1.37"
 fastrand = "2.0.1"
@@ -74,3 +75,13 @@ _str0m_test = { path = "_str0m_test" }
 time = "=0.3.23"
 pcap-file = "2.0.0"
 url = "=2.5.0"
+
+
+[build-dependencies]
+#anyhow = "1.0"
+cxx-build = "1.0"
+#flate2 = "1.0"
+#reqwest = { version = "0.12", features = ["blocking"] }
+#sha2 = "0.10"
+#tar = "0.4"
+walkdir = "2.5"

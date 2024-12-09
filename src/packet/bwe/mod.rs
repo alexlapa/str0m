@@ -234,9 +234,31 @@ impl TryFrom<&TwccSendRecord> for AckedPacket {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BandwidthUsage {
-    Overuse,
     Normal,
     Underuse,
+    Overuse,
+}
+
+impl From<crate::bridge::BandwidthUsage> for BandwidthUsage {
+    fn from(value: crate::bridge::BandwidthUsage) -> Self {
+        if value.repr == 1 {
+            BandwidthUsage::Underuse
+        } else if value.repr == 2 {
+            BandwidthUsage::Overuse
+        } else {
+            BandwidthUsage::Normal
+        }
+    }
+}
+
+impl BandwidthUsage {
+    pub fn to_cpp(self) -> &'static str {
+        match self {
+            BandwidthUsage::Overuse => "webrtc::BandwidthUsage::kBwOverusing",
+            BandwidthUsage::Normal => "webrtc::BandwidthUsage::kBwNormal",
+            BandwidthUsage::Underuse => "webrtc::BandwidthUsage::kBwUnderusing",
+        }
+    }
 }
 
 impl fmt::Display for BandwidthUsage {
