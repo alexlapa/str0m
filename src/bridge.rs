@@ -12,7 +12,7 @@ pub mod ffi {
     }
 
     unsafe extern "C++" {
-        include!("/media/alexlapa/drive2/CLionProjects3/str0m-fork/include/bridge.h");
+        include!("bridge.h");
 
         pub type BandwidthUsage;
 

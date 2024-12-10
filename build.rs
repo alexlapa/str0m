@@ -3,18 +3,14 @@ use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
 fn main() {
-    let path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let include_path = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("include");
     let mut build = cxx_build::bridge("src/bridge.rs");
     let cpp_files = get_cpp_files();
 
     build
         .files(&cpp_files)
-        .include(path.join("include"))
+        .include(include_path)
         .flag("-std=c++20");
-    // .include(libpath.join("include"))
-    // .include(libpath.join("include/third_party/abseil-cpp"))
-    // .include(libpath.join("include/third_party/libyuv/include"))
-    // .flag("-DNOMINMAX");
 
     build.compile("cppbwe");
 

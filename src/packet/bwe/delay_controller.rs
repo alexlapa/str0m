@@ -74,19 +74,20 @@ impl DelayController {
     ) -> Option<Bitrate> {
         let mut max_rtt = None;
 
-        // for acked_packet in acked {
-        //     self.remote_started_at.get_or_insert(acked_packet.remote_recv_time);
-        //
-        //     max_rtt = max_rtt.max(Some(acked_packet.rtt()));
-        //     if let Some(dv) = self
-        //         .arrival_group_accumulator
-        //         .accumulate_packet(acked_packet)
-        //     {
-        //         // Got a new delay variation, add it to the trendline
-        //         self.trendline_estimator
-        //             .add_delay_observation(dv, now);
-        //     }
-        // }
+        for acked_packet in acked {
+            self.remote_started_at.get_or_insert(acked_packet.remote_recv_time);
+
+            max_rtt = max_rtt.max(Some(acked_packet.rtt()));
+            if let Some(dv) = self
+                .arrival_group_accumulator
+                .accumulate_packet(acked_packet)
+            {
+                // Got a new delay variation, add it to the trendline
+                self.trendline_estimator
+                    .add_delay_observation(dv, now);
+            }
+        }
+        let old_hyp = self.trendline_estimator.hypothesis();
 
         for acked_packet in acked {
             self.remote_started_at.get_or_insert(acked_packet.remote_recv_time);
@@ -141,7 +142,7 @@ impl DelayController {
         self.last_twcc_report = now;
 
         error!(
-            "From [{from}], hypothesis = {new_hypothesis:?}, estimate = {:?}",
+            "From [{from}], hypothesis = {old_hyp:?} => {new_hypothesis:?}, estimate = {:?}",
             self.last_estimate,
         );
 
