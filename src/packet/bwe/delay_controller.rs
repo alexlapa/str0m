@@ -64,7 +64,7 @@ impl DelayController {
             max_rtt = max_rtt.max(Some(acked_packet.rtt()));
             if let Some(delay_variation) = self
                 .arrival_group_accumulator
-                .accumulate_packet(acked_packet)
+                .compute_deltas(acked_packet)
             {
                 crate::packet::bwe::macros::log_delay_variation!(delay_variation.delay_delta);
 
