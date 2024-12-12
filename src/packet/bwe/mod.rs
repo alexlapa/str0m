@@ -19,9 +19,12 @@ pub(crate) mod macros;
 mod rate_control;
 mod super_instant;
 mod trendline_estimator;
+mod arrival_group2;
+mod trendline_estimator2;
 
 use acked_bitrate_estimator::AckedBitrateEstimator;
 use arrival_group::InterGroupDelayDelta;
+use arrival_group2::InterGroupDelayDelta as InterGroupDelayDelta2;
 use delay_controller::DelayController;
 use loss_controller::LossController;
 use macros::log_loss;
