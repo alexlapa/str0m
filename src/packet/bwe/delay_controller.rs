@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::rtp_::Bitrate;
@@ -23,12 +22,6 @@ const MAX_TWCC_GAP: Duration = Duration::from_millis(500);
 pub struct DelayController {
     arrival_group_accumulator: ArrivalGroupAccumulator,
     trendline_estimator: TrendlineEstimator,
-    started_at: Instant,
-    remote_started_at: Option<Instant>,
-    cpp_trendline_estimator: std::sync::Mutex<cxx::UniquePtr<crate::bridge::TrendlineEstimator>>,
-    cpp_arrival_group_accumulator:
-        std::sync::Mutex<cxx::UniquePtr<crate::bridge::InterArrivalDelta>>,
-
     rate_control: RateControl,
     /// Last estimate produced, unlike [`next_estimate`] this will always have a value after the
     /// first estimate.
@@ -49,12 +42,6 @@ impl DelayController {
         Self {
             arrival_group_accumulator: ArrivalGroupAccumulator::default(),
             trendline_estimator: TrendlineEstimator::new(20),
-            started_at: Instant::now(),
-            remote_started_at: None,
-            cpp_trendline_estimator: std::sync::Mutex::new(crate::bridge::new_trendline_estimator()),
-            cpp_arrival_group_accumulator: std::sync::Mutex::new(
-                crate::bridge::new_inter_arrival_delta(),
-            ),
             rate_control: RateControl::new(initial_bitrate, Bitrate::kbps(40), Bitrate::gbps(10)),
             last_estimate: None,
             max_rtt_history: VecDeque::default(),
@@ -70,81 +57,31 @@ impl DelayController {
         acked: &[AckedPacket],
         acked_bitrate: Option<Bitrate>,
         now: Instant,
-        from: SocketAddr,
     ) -> Option<Bitrate> {
         let mut max_rtt = None;
 
-        for acked_packet in acked {
-            self.remote_started_at.get_or_insert(acked_packet.remote_recv_time);
-
-            max_rtt = max_rtt.max(Some(acked_packet.rtt()));
-            if let Some(dv) = self
-                .arrival_group_accumulator
-                .accumulate_packet(acked_packet)
-            {
-                // Got a new delay variation, add it to the trendline
-                self.trendline_estimator
-                    .add_delay_observation(dv, now);
-            }
-        }
-        let old_hyp = self.trendline_estimator.hypothesis();
-
-        for acked_packet in acked {
-            self.remote_started_at.get_or_insert(acked_packet.remote_recv_time);
-
-            let send_time_us = (acked_packet.local_send_time - self.started_at).as_micros() as u64;
-            let arrival_time_us = (acked_packet.remote_recv_time - self.remote_started_at.unwrap())
-                .as_micros() as u64;
-            let arrival_time_ms = Duration::from_micros(arrival_time_us).as_millis() as i64;
-            let system_time_us = (now - self.started_at).as_micros() as u64;
-            let packet_size = acked_packet.size.as_bytes_usize() as u64;
-            let mut send_delta_us = 0u64;
-            let mut recv_delta_us = 0u64;
-            let mut packet_size_delta = 0u64;
-            let calculated_deltas = crate::bridge::ComputeDeltas(
-                self.cpp_arrival_group_accumulator
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap(),
-                send_time_us,
-                arrival_time_us,
-                system_time_us,
-                packet_size,
-                &mut send_delta_us,
-                &mut recv_delta_us,
-                &mut packet_size_delta,
-            );
-            let send_delta = Duration::from_micros(send_delta_us);
-            let recv_delta = Duration::from_micros(recv_delta_us);
-
-            if calculated_deltas {
-                self.cpp_trendline_estimator
-                    .lock()
-                    .unwrap()
-                    .as_mut()
-                    .unwrap()
-                    .Update(
-                        send_delta.as_secs_f64() * 1000.0,
-                        recv_delta.as_secs_f64() * 1000.0,
-                        arrival_time_ms,
-                    )
-            }
-        }
+        // for acked_packet in acked {
+        //     max_rtt = max_rtt.max(Some(acked_packet.rtt()));
+        //     if let Some(delay_variation) = self
+        //         .arrival_group_accumulator
+        //         .accumulate_packet(acked_packet)
+        //     {
+        //         crate::packet::bwe::macros::log_delay_variation!(delay_variation.delay_delta);
+        //
+        //         // Got a new delay variation, add it to the trendline
+        //         self.trendline_estimator
+        //             .add_delay_observation(delay_variation, now);
+        //     }
+        // }
 
         if let Some(rtt) = max_rtt {
             self.add_max_rtt(rtt);
         }
 
-        let new_hypothesis: BandwidthUsage = self.cpp_trendline_estimator.lock().unwrap().as_mut().unwrap().State().into();
+        let new_hypothesis = self.trendline_estimator.hypothesis();
 
         self.update_estimate(new_hypothesis, acked_bitrate, self.mean_max_rtt, now);
         self.last_twcc_report = now;
-
-        error!(
-            "From [{from}], hypothesis = {old_hyp:?} => {new_hypothesis:?}, estimate = {:?}",
-            self.last_estimate,
-        );
 
         self.last_estimate
     }

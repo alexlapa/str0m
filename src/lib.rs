@@ -573,11 +573,14 @@
 //! [reqkey2]:    https://docs.rs/str0m/*/str0m/rtp/struct.StreamRx.html#method.request_keyframe
 //! [bitwhip]:    https://github.com/bitwhip/bitwhip
 
+// #![forbid(unsafe_code)]
 #![allow(clippy::new_without_default)]
 #![allow(clippy::bool_to_int_with_if)]
 #![allow(clippy::assertions_on_constants)]
 #![allow(clippy::manual_range_contains)]
 #![allow(clippy::get_first)]
+#![allow(clippy::needless_lifetimes)]
+#![deny(missing_docs)]
 
 #[macro_use]
 extern crate tracing;
@@ -1109,9 +1112,13 @@ impl Rtc {
             {
                 DtlsCert::new_openssl()
             }
-            #[cfg(not(feature = "openssl"))]
+            #[cfg(feature = "wincrypto")]
             {
-                panic!("No DTLS implementation. Enable openssl feature");
+                DtlsCert::new_wincrypto()
+            }
+            #[cfg(not(any(feature = "openssl", feature = "wincrypto")))]
+            {
+                panic!("No DTLS implementation. Enable crypto feature");
             }
         };
 
@@ -1746,7 +1753,7 @@ impl Rtc {
             }
             Dtls(dtls) => self.dtls.handle_receive(dtls)?,
             Rtp(rtp) => self.session.handle_rtp_receive(now, rtp),
-            Rtcp(rtcp) => self.session.handle_rtcp_receive(now, rtcp, r.source),
+            Rtcp(rtcp) => self.session.handle_rtcp_receive(now, rtcp),
         }
 
         Ok(())
@@ -1886,14 +1893,13 @@ impl RtcConfig {
     /// Generating a certificate can be a time-consuming process.
     /// Use this API to reuse a previously created [`DtlsCert`] if available.
     ///
-    /// ```
     /// # use str0m::RtcConfig;
     /// # use str0m::change::DtlsCert;
+    /// ![cfg(feature = 'openssl')]
     /// let dtls_cert = DtlsCert::new_openssl();
     ///
     /// let rtc_config = RtcConfig::default()
     ///     .set_dtls_cert(dtls_cert);
-    /// ```
     pub fn set_dtls_cert(mut self, dtls_cert: DtlsCert) -> Self {
         self.dtls_cert = Some(dtls_cert);
         self

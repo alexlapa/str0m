@@ -1,5 +1,6 @@
 use std::collections::vec_deque;
 use std::collections::VecDeque;
+use std::fmt;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,7 @@ use super::{RtcpType, SeqNo, Ssrc, TransportType};
 /// Transport Wide Congestion Control.
 ///
 /// Sent in response to every RTP packet, but does ranges of packets to respond to.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Twcc {
     /// Sender of this feedback. Mostly irrelevant, but part of RTCP packets.
     pub sender_ssrc: Ssrc,
@@ -90,7 +91,6 @@ impl Iterator for TwccIter {
             }
         };
 
-        // asdasdasdasdasdasdasdasdasdasd
         let instant = match status {
             PacketStatus::NotReceived => None,
             PacketStatus::ReceivedSmallDelta => match self.twcc.delta.pop_front()? {
@@ -985,7 +985,7 @@ impl<'a> TryFrom<&'a [u8]> for PacketChunk {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TwccSendRegister {
     /// How many send records to keep.
     keep: usize,
@@ -1010,7 +1010,7 @@ impl<'a> IntoIterator for &'a TwccSendRegister {
 }
 
 /// Record for a send entry in twcc.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TwccSendRecord {
     /// Twcc sequence number for a packet we sent.
     seq: SeqNo,
@@ -1334,6 +1334,21 @@ impl<'a> Iterator for TwccSendRecordsIter<'a> {
 //
 // Same as the question above, this is a truncation to (0) for not received and (1) for
 // received, small delta.
+
+impl fmt::Debug for Twcc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Twcc")
+            .field("sender_ssrc", &self.sender_ssrc)
+            .field("ssrc", &self.ssrc)
+            .field("base_seq", &self.base_seq)
+            .field("status_count", &self.status_count)
+            .field("reference_time", &self.reference_time)
+            .field("feedback_count", &self.feedback_count)
+            .field("chunks", &self.chunks)
+            .field("delta", &self.delta.len())
+            .finish()
+    }
+}
 
 #[allow(clippy::assign_op_pattern)]
 #[cfg(test)]

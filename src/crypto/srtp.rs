@@ -46,7 +46,12 @@ pub fn new_aes_128_cm_sha1_80(
         let ctx = super::ossl::OsslSrtpCryptoImpl::new_aes_128_cm_sha1_80(key, encrypt);
         Box::new(ctx)
     }
-    #[cfg(not(feature = "openssl"))]
+    #[cfg(feature = "wincrypto")]
+    {
+        let ctx = super::wincrypto::WinCryptoSrtpCryptoImpl::new_aes_128_cm_sha1_80(key, encrypt);
+        Box::new(ctx)
+    }
+    #[cfg(not(any(feature = "openssl", feature = "wincrypto")))]
     {
         panic!("No SRTP implementation. Enable openssl feature");
     }
@@ -66,14 +71,18 @@ pub fn new_aead_aes_128_gcm(key: AeadKey, encrypt: bool) -> Box<dyn aead_aes_128
         let ctx = super::ossl::OsslSrtpCryptoImpl::new_aead_aes_128_gcm(key, encrypt);
         Box::new(ctx)
     }
-    #[cfg(not(feature = "openssl"))]
+    #[cfg(feature = "wincrypto")]
+    {
+        let ctx = super::wincrypto::WinCryptoSrtpCryptoImpl::new_aead_aes_128_gcm(key, encrypt);
+        Box::new(ctx)
+    }
+    #[cfg(not(any(feature = "openssl", feature = "wincrypto")))]
     {
         panic!("No SRTP implementation. Enable openssl feature");
     }
 }
 
 #[allow(unused)]
-
 pub fn srtp_aes_128_ecb_round(key: &[u8], input: &[u8], output: &mut [u8]) {
     /// TODO: The exact mechanism for passing which crypto to use from
     ///       RtcConfig to here. We're not going to instantiate openssl
@@ -82,7 +91,11 @@ pub fn srtp_aes_128_ecb_round(key: &[u8], input: &[u8], output: &mut [u8]) {
     {
         super::ossl::OsslSrtpCryptoImpl::srtp_aes_128_ecb_round(key, input, output)
     }
-    #[cfg(not(feature = "openssl"))]
+    #[cfg(feature = "wincrypto")]
+    {
+        super::wincrypto::WinCryptoSrtpCryptoImpl::srtp_aes_128_ecb_round(key, input, output)
+    }
+    #[cfg(not(any(feature = "openssl", feature = "wincrypto")))]
     {
         panic!("No SRTP implementation. Enable openssl feature");
     }

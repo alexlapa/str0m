@@ -2,7 +2,7 @@
 
 use crate::{rtp_::Mid, Rtc};
 
-pub use crate::rtp_::{Bitrate, DataSize};
+pub use crate::rtp_::Bitrate;
 
 #[derive(Debug, PartialEq)]
 /// Bandwidth estimation kind.

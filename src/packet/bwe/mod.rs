@@ -6,7 +6,6 @@
 
 use std::cmp::Ordering;
 use std::fmt;
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::rtp_::{Bitrate, DataSize, SeqNo, TwccSendRecord};
@@ -19,6 +18,7 @@ pub(crate) mod macros;
 mod rate_control;
 mod super_instant;
 mod trendline_estimator;
+mod arrival_group_orig;
 
 use acked_bitrate_estimator::AckedBitrateEstimator;
 use arrival_group::InterGroupDelayDelta;
@@ -64,7 +64,6 @@ impl SendSideBandwithEstimator {
         &mut self,
         records: impl Iterator<Item = &'t TwccSendRecord>,
         now: Instant,
-        from: SocketAddr,
     ) {
         let _ = self.started_at.get_or_insert(now);
 
@@ -91,9 +90,9 @@ impl SendSideBandwithEstimator {
         }
 
         let acked_bitrate = self.acked_bitrate_estimator.current_estimate();
-        let Some(delay_estimate) =
-            self.delay_controller
-                .update(&acked_packets, acked_bitrate, now, from)
+        let Some(delay_estimate) = self
+            .delay_controller
+            .update(&acked_packets, acked_bitrate, now)
         else {
             return;
         };
@@ -119,21 +118,6 @@ impl SendSideBandwithEstimator {
             loss_controller.set_acknowledged_bitrate(acked_bitrate);
         }
         loss_controller.update_bandwidth_estimate(&send_records, delay_estimate);
-
-        // {
-        //     let delay_estimate = self.delay_controller.last_estimate();
-        //     let loss_estimate = self
-        //         .loss_controller
-        //         .as_ref()
-        //         .map(|l| l.get_loss_based_result().bandwidth_estimate);
-        //
-        //     error!(
-        //         "From [{from}], \
-        //         acked_bitrate = {acked_bitrate:?}, \
-        //         delay_estimate = {delay_estimate:?}, \
-        //         loss_estimate = {loss_estimate:?}"
-        //     );
-        // }
     }
 
     pub(crate) fn poll_timeout(&self) -> Instant {
@@ -234,31 +218,9 @@ impl TryFrom<&TwccSendRecord> for AckedPacket {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BandwidthUsage {
+    Overuse,
     Normal,
     Underuse,
-    Overuse,
-}
-
-impl From<crate::bridge::BandwidthUsage> for BandwidthUsage {
-    fn from(value: crate::bridge::BandwidthUsage) -> Self {
-        if value.repr == 1 {
-            BandwidthUsage::Underuse
-        } else if value.repr == 2 {
-            BandwidthUsage::Overuse
-        } else {
-            BandwidthUsage::Normal
-        }
-    }
-}
-
-impl BandwidthUsage {
-    pub fn to_cpp(self) -> &'static str {
-        match self {
-            BandwidthUsage::Overuse => "webrtc::BandwidthUsage::kBwOverusing",
-            BandwidthUsage::Normal => "webrtc::BandwidthUsage::kBwNormal",
-            BandwidthUsage::Underuse => "webrtc::BandwidthUsage::kBwUnderusing",
-        }
-    }
 }
 
 impl fmt::Display for BandwidthUsage {

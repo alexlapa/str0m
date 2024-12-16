@@ -8,11 +8,11 @@
  *  be found in the AUTHORS file in the root of the source tree.
  */
 
-#include "inter_arrival_delta.h"
-
+#include <iostream>
 #include <algorithm>
 #include <cstddef>
 
+#include "inter_arrival_delta.h"
 #include "time_delta.h"
 #include "timestamp.h"
 
@@ -48,19 +48,17 @@ bool InterArrivalDelta::ComputeDeltas(Timestamp send_time,
   } else if (NewTimestampGroup(arrival_time, send_time)) {
     // First packet of a later send burst, the previous packets sample is ready.
     if (prev_timestamp_group_.complete_time.IsFinite()) {
-      *send_time_delta =
-          current_timestamp_group_.send_time - prev_timestamp_group_.send_time;
-      *arrival_time_delta = current_timestamp_group_.complete_time -
-                            prev_timestamp_group_.complete_time;
+      *send_time_delta = current_timestamp_group_.send_time - prev_timestamp_group_.send_time;
+      *arrival_time_delta = current_timestamp_group_.complete_time - prev_timestamp_group_.complete_time;
 
-      TimeDelta system_time_delta = current_timestamp_group_.last_system_time -
-                                    prev_timestamp_group_.last_system_time;
+//      TimeDelta system_time_delta = current_timestamp_group_.last_system_time -
+//                                    prev_timestamp_group_.last_system_time;
+//
+//      if (*arrival_time_delta - system_time_delta >= kArrivalTimeOffsetThreshold) {
+//        Reset();
+//        return false;
+//      }
 
-      if (*arrival_time_delta - system_time_delta >=
-          kArrivalTimeOffsetThreshold) {
-        Reset();
-        return false;
-      }
       if (*arrival_time_delta < TimeDelta::Zero()) {
         // The group of packets has been reordered since receiving its local
         // arrival timestamp.
@@ -76,6 +74,7 @@ bool InterArrivalDelta::ComputeDeltas(Timestamp send_time,
                            static_cast<int>(prev_timestamp_group_.size);
       calculated_deltas = true;
     }
+
     prev_timestamp_group_ = current_timestamp_group_;
     // The new timestamp is now the current frame.
     current_timestamp_group_.first_send_time = send_time;
@@ -86,6 +85,7 @@ bool InterArrivalDelta::ComputeDeltas(Timestamp send_time,
     current_timestamp_group_.send_time =
         std::max(current_timestamp_group_.send_time, send_time);
   }
+
   // Accumulate the frame size.
   current_timestamp_group_.size += packet_size;
   current_timestamp_group_.complete_time = arrival_time;
@@ -103,23 +103,28 @@ bool InterArrivalDelta::NewTimestampGroup(Timestamp arrival_time,
   } else if (BelongsToBurst(arrival_time, send_time)) {
     return false;
   } else {
-    return send_time - current_timestamp_group_.first_send_time >
-           send_time_group_length_;
+      return send_time - current_timestamp_group_.first_send_time >
+             send_time_group_length_;
   }
 }
 
 bool InterArrivalDelta::BelongsToBurst(Timestamp arrival_time,
                                        Timestamp send_time) const {
-  TimeDelta arrival_time_delta =
-      arrival_time - current_timestamp_group_.complete_time;
+  TimeDelta arrival_time_delta = arrival_time - current_timestamp_group_.complete_time;
   TimeDelta send_time_delta = send_time - current_timestamp_group_.send_time;
-  if (send_time_delta.IsZero())
+
+  if (send_time_delta.IsZero()) {
+
     return true;
+  }
+
   TimeDelta propagation_delta = arrival_time_delta - send_time_delta;
   if (propagation_delta < TimeDelta::Zero() &&
       arrival_time_delta <= kBurstDeltaThreshold &&
-      arrival_time - current_timestamp_group_.first_arrival < kMaxBurstDuration)
-    return true;
+      arrival_time - current_timestamp_group_.first_arrival < kMaxBurstDuration) {
+          return true;
+  }
+
   return false;
 }
 
