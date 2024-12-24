@@ -12,7 +12,7 @@ edition = "2021"
 exclude = ["/cargo_deny.sh", "/deny.toml", "/run-fuzz.sh"]
 
 # MSRV
-rust-version = "1.65"
+rust-version = "1.71.1"
 
 # Notes on OpenSSL
 # - Vendored (static link source build) ensures version consistency and easier
@@ -25,11 +25,14 @@ rust-version = "1.65"
 
 [features]
 default = ["openssl", "vendored", "sha1"]
-openssl = ["dep:openssl", "dep:openssl-sys", "dep:libc"]
+openssl = ["dep:openssl", "dep:openssl-sys", "dep:libc", "rouille/ssl"]
 vendored = ["openssl?/vendored"]
 
 # Without the sha1 feature, str0m uses the openssl sha1 impl which is slower.
 sha1 = ["dep:sha1"]
+
+# Uses native Windows API to implement cryptographic features, use instead on openssl and sha1.
+wincrypto = ["dep:str0m-wincrypto"]
 
 _internal_dont_use_log_stats = []
 _internal_test_exports = []
@@ -39,12 +42,12 @@ cxx = "1.0"
 thiserror = "1.0.69"
 tracing = "0.1.37"
 fastrand = "2.0.1"
-once_cell = "1.17.0"
+once_cell = "1.17.0" # NB: Can be dropped in MSRV 1.80 using LazyLock.
 sctp-proto = "0.3.0"
 combine = "4.6.6"
 
 # Sadly no DTLS support in rustls.
-openssl = { version = ">=0.10.66", optional = true }
+openssl = { version = "0.10.66", optional = true }
 openssl-sys = { version = "0.9.80", optional = true }
 libc = { version = "0.2", optional = true }
 
@@ -56,25 +59,30 @@ serde = { version = "1.0.152", features = ["derive"] }
 [target.'cfg(unix)'.dependencies]
 sha1 = { version = "0.10.6", features = ["asm"], optional = true }
 
+[target.'cfg(windows)'.dependencies]
 # The ASM feature is broken on windows. Unclear where in the rust-crypto project
 # we're supposed to check when it gets sorted out.
-[target.'cfg(windows)'.dependencies]
 sha1 = { version = "0.10.6", optional = true }
+# Windows Crypto (CNG + SChannel)
+str0m-wincrypto = { path = "wincrypto", optional = true }
 
 [dev-dependencies]
-rouille = { version = "3.5.0", features = ["ssl"] }
+rouille = { version = "3.5.0", features = [] }
 serde_json = "1.0"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter", "std"] }
 systemstat = "0.2.2"
+pcap-file = "2.0.0"
 
 # dummy package that enables "_internal_test_exports"
 _str0m_test = { path = "_str0m_test" }
 
-# This is to ensure MSRV 1.65
-# Remove when we move MSRV
-time = "=0.3.23"
-pcap-file = "2.0.0"
-url = "=2.5.0"
+[[example]]
+name = "chat"
+required-features = ["openssl"]
+
+[[example]]
+name = "http-post"
+required-features = ["openssl"]
 
 
 [build-dependencies]

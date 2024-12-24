@@ -1109,9 +1109,13 @@ impl Rtc {
             {
                 DtlsCert::new_openssl()
             }
-            #[cfg(not(feature = "openssl"))]
+            #[cfg(feature = "wincrypto")]
             {
-                panic!("No DTLS implementation. Enable openssl feature");
+                DtlsCert::new_wincrypto()
+            }
+            #[cfg(not(any(feature = "openssl", feature = "wincrypto")))]
+            {
+                panic!("No DTLS implementation. Enable crypto feature");
             }
         };
 
@@ -1886,14 +1890,13 @@ impl RtcConfig {
     /// Generating a certificate can be a time-consuming process.
     /// Use this API to reuse a previously created [`DtlsCert`] if available.
     ///
-    /// ```
     /// # use str0m::RtcConfig;
     /// # use str0m::change::DtlsCert;
+    /// ![cfg(feature = 'openssl')]
     /// let dtls_cert = DtlsCert::new_openssl();
     ///
     /// let rtc_config = RtcConfig::default()
     ///     .set_dtls_cert(dtls_cert);
-    /// ```
     pub fn set_dtls_cert(mut self, dtls_cert: DtlsCert) -> Self {
         self.dtls_cert = Some(dtls_cert);
         self
