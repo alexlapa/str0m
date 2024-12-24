@@ -23,8 +23,8 @@ namespace webrtc {
         uint64_t arrival_time_us,
         uint64_t system_time_us,
         uint64_t packet_size,
-        uint64_t& send_time_delta_us,
-        uint64_t& arrival_time_delta_us,
+        int64_t& send_time_delta_us,
+        int64_t& arrival_time_delta_us,
         uint64_t& packet_size_delta);
 
 }  // namespace bridge

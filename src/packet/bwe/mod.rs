@@ -14,13 +14,13 @@ use crate::rtp_::{Bitrate, DataSize, SeqNo, TwccSendRecord};
 
 mod acked_bitrate_estimator;
 mod arrival_group;
+mod arrival_group2;
 mod delay_controller;
 mod loss_controller;
 pub(crate) mod macros;
 mod rate_control;
 mod super_instant;
 mod trendline_estimator;
-mod arrival_group2;
 mod trendline_estimator2;
 
 use acked_bitrate_estimator::AckedBitrateEstimator;

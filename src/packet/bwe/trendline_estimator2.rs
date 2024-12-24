@@ -106,7 +106,8 @@ impl TrendlineEstimator {
             .zero_time
             .get_or_insert(variation.last_remote_recv_time);
 
-        let delta_ms = variation.arrival_time_delta.as_secs_f64() * 1000.0 - variation.send_time_delta.as_secs_f64() * 1000.0;
+        let delta_ms = variation.arrival_time_delta.as_secs_f64() * 1000.0
+            - variation.send_time_delta.as_secs_f64() * 1000.0;
         self.num_delay_variations += 1;
         self.num_delay_variations = self.num_delay_variations.min(*DELAY_COUNT_RANGE.end());
         self.accumulated_delay += delta_ms;

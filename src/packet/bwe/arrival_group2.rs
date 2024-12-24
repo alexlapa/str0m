@@ -1,8 +1,7 @@
-use std::mem;
 use std::time::{Duration, Instant};
-use crate::rtp_::SeqNo;
-use crate::util::not_happening;
+
 use super::AckedPacket;
+use crate::rtp_::SeqNo;
 
 const BURST_DELTA_THRESHOLD: Duration = Duration::from_millis(5);
 const SEND_TIME_GROUP_LENGTH: Duration = Duration::from_millis(5);
@@ -13,7 +12,7 @@ const REORDERED_RESET_THRESHOLD: usize = 3;
 pub struct ArrivalGroupAccumulator {
     previous_group: Option<ArrivalGroup>,
     current_group: Option<ArrivalGroup>,
-    num_consecutive_reordered_packets: usize
+    num_consecutive_reordered_packets: usize,
 }
 
 impl ArrivalGroupAccumulator {
@@ -21,10 +20,7 @@ impl ArrivalGroupAccumulator {
     /// Accumulate a packet.
     ///
     /// If adding this packet produced a new delay delta it is returned.
-    pub(super) fn compute_deltas(
-        &mut self,
-        packet: &AckedPacket,
-    ) -> Option<InterGroupDelayDelta> {
+    pub(super) fn compute_deltas(&mut self, packet: &AckedPacket) -> Option<InterGroupDelayDelta> {
         let Some(current_group) = &mut self.current_group else {
             // We don't have enough data to update the filter, so we store it until we
             // have two frames of data to process.
@@ -46,12 +42,14 @@ impl ArrivalGroupAccumulator {
         if current_group.first_send_time > packet.local_send_time {
             // Reordered packet.
             return None;
-        } else if current_group.new_timestamp_group(packet.remote_recv_time, packet.local_send_time) {
+        } else if current_group.new_timestamp_group(packet.remote_recv_time, packet.local_send_time)
+        {
             // First packet of a later send burst, the previous packets sample is ready.
             if self.previous_group.is_some() {
                 let previous_group = self.previous_group.as_mut().unwrap();
                 send_time_delta = Some(current_group.send_time - previous_group.send_time);
-                arrival_time_delta = Some(current_group.complete_time - previous_group.complete_time);
+                arrival_time_delta =
+                    Some(current_group.complete_time - previous_group.complete_time);
 
                 if arrival_time_delta.unwrap() < Duration::ZERO {
                     // The group of packets has been reordered since receiving its local
@@ -93,7 +91,6 @@ impl ArrivalGroupAccumulator {
     }
 }
 
-
 #[derive(Debug, Clone, Copy)]
 struct ArrivalGroup {
     first_seq_no: SeqNo,
@@ -102,7 +99,7 @@ struct ArrivalGroup {
     last_seq_no: SeqNo,
     send_time: Instant,
     complete_time: Instant,
-    size: usize
+    size: usize,
 }
 
 impl ArrivalGroup {
@@ -123,15 +120,14 @@ impl ArrivalGroup {
         }
 
         let propagation_delta = arrival_time_delta.as_secs_f64() - send_time_delta.as_secs_f64();
-        if propagation_delta < 0.0 &&
-            arrival_time_delta <= BURST_DELTA_THRESHOLD &&
-            arrival_time - self.first_arrival < MAX_BURST_DURATION {
-
+        if propagation_delta < 0.0
+            && arrival_time_delta <= BURST_DELTA_THRESHOLD
+            && arrival_time - self.first_arrival < MAX_BURST_DURATION
+        {
             return true;
         }
 
         return false;
-
     }
 }
 

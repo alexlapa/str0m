@@ -67,8 +67,8 @@ pub mod ffi {
             arrival_time_us: u64,
             system_time_us: u64,
             packet_size_bytes: u64,
-            send_time_delta_us: &mut u64,
-            arrival_time_delta_us: &mut u64,
+            send_time_delta_us: &mut i64,
+            arrival_time_delta_us: &mut i64,
             packet_size_delta: &mut u64,
         ) -> bool;
 
