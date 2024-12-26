@@ -15,6 +15,7 @@
 
 #include "time_delta.h"
 #include "timestamp.h"
+#include <iostream>
 
 namespace webrtc {
 
@@ -113,13 +114,15 @@ bool InterArrivalDelta::BelongsToBurst(Timestamp arrival_time,
   TimeDelta arrival_time_delta =
       arrival_time - current_timestamp_group_.complete_time;
   TimeDelta send_time_delta = send_time - current_timestamp_group_.send_time;
-  if (send_time_delta.IsZero())
-    return true;
+  if (send_time_delta.IsZero()) {
+      return true;
+  }
   TimeDelta propagation_delta = arrival_time_delta - send_time_delta;
   if (propagation_delta < TimeDelta::Zero() &&
       arrival_time_delta <= kBurstDeltaThreshold &&
-      arrival_time - current_timestamp_group_.first_arrival < kMaxBurstDuration)
+      arrival_time - current_timestamp_group_.first_arrival < kMaxBurstDuration) {
     return true;
+  }
   return false;
 }
 

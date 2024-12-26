@@ -20,7 +20,7 @@ pub(super) struct TrendlineEstimator {
     window_size: usize,
 
     /// The first instant we saw, used as zero point.
-    zero_time: Option<Instant>,
+    zero_time: Option<i64>,
 
     /// The history of observed delay variations.
     history: VecDeque<Timing>,
@@ -106,8 +106,7 @@ impl TrendlineEstimator {
             .zero_time
             .get_or_insert(variation.last_remote_recv_time);
 
-        let delta_ms = variation.arrival_time_delta.as_secs_f64() * 1000.0
-            - variation.send_time_delta.as_secs_f64() * 1000.0;
+        let delta_ms = variation.arrival_time_delta * 1000.0 - variation.send_time_delta * 1000.0;
         self.num_delay_variations += 1;
         self.num_delay_variations = self.num_delay_variations.min(*DELAY_COUNT_RANGE.end());
         self.accumulated_delay += delta_ms;
@@ -117,7 +116,7 @@ impl TrendlineEstimator {
         let remote_recv_time = variation.last_remote_recv_time - zero_time;
         let timing = Timing {
             at: now,
-            remote_recv_time_ms: remote_recv_time.as_secs_f64() * 1000.0,
+            remote_recv_time_ms: remote_recv_time as f64,
             smoothed_delay_ms: self.smoothed_delay,
         };
 
@@ -197,7 +196,7 @@ impl TrendlineEstimator {
                         // Initialize the timer. Assume that we've been
                         // over-using half of the time since the previous
                         // sample.
-                        time_overusing: variation.send_time_delta / 2,
+                        time_overusing: variation.send_time_delta / 2.0,
                     };
                     self.overuse = Some(new_overuse);
 
@@ -213,7 +212,7 @@ impl TrendlineEstimator {
                 "Trendline Estimator: Maybe overusing"
             );
 
-            if overuse.time_overusing > OVER_USE_TIME_THRESHOLD
+            if overuse.time_overusing > OVER_USE_TIME_THRESHOLD.as_secs_f64()
                 && overuse.count > 1
                 && trend > self.previous_trend
             {
@@ -288,5 +287,6 @@ struct Timing {
 
 struct Overuse {
     count: usize,
-    time_overusing: Duration,
+    // secs as f64
+    time_overusing: f64,
 }

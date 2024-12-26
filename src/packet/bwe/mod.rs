@@ -13,22 +13,20 @@ use std::time::{Duration, Instant};
 use crate::rtp_::{Bitrate, DataSize, SeqNo, TwccSendRecord};
 
 mod acked_bitrate_estimator;
-mod arrival_group;
 mod arrival_group2;
 mod delay_controller;
 mod loss_controller;
 pub(crate) mod macros;
 mod rate_control;
 mod super_instant;
-mod trendline_estimator;
 mod trendline_estimator2;
 
 use acked_bitrate_estimator::AckedBitrateEstimator;
-use arrival_group::InterGroupDelayDelta;
 use arrival_group2::InterGroupDelayDelta as InterGroupDelayDelta2;
 use delay_controller::DelayController;
 use loss_controller::LossController;
 use macros::log_loss;
+use crate::util::already_happened;
 
 const INITIAL_BITRATE_WINDOW: Duration = Duration::from_millis(500);
 const BITRATE_WINDOW: Duration = Duration::from_millis(150);
@@ -99,7 +97,7 @@ impl SendSideBandwithEstimator {
 
         for acked_packet in acked_packets.iter() {
             self.acked_bitrate_estimator
-                .update(acked_packet.remote_recv_time, acked_packet.size);
+                .update(acked_packet.remote_recv_time_ms, acked_packet.size);
         }
 
         let acked_bitrate = self.acked_bitrate_estimator.current_estimate();
@@ -190,26 +188,19 @@ pub struct AckedPacket {
     /// The size of the packets in bytes.
     size: DataSize,
     /// When we sent the packet
-    local_send_time: Instant,
+    local_send_time_ms: i64,
     /// When the packet was received at the remote, note this Instant is only usable with other
     /// instants of the same type i.e. those that represent a TWCC reported receive time for this
     /// session.
-    remote_recv_time: Instant,
-    /// The local time when received confirmation that the other side received the seq i.e. when we
-    /// received the TWCC report for this packet.
-    local_recv_time: Instant,
+    remote_recv_time_ms: i64,
 }
 
 impl AckedPacket {
-    fn rtt(&self) -> Duration {
-        self.local_recv_time - self.local_send_time
-    }
-
     fn order_by_receive_time(lhs: &Self, rhs: &Self) -> Ordering {
-        if lhs.remote_recv_time != rhs.remote_recv_time {
-            lhs.remote_recv_time.cmp(&rhs.remote_recv_time)
-        } else if lhs.local_send_time != rhs.local_send_time {
-            lhs.local_send_time.cmp(&rhs.local_send_time)
+        if lhs.remote_recv_time_ms != rhs.remote_recv_time_ms {
+            lhs.remote_recv_time_ms.cmp(&rhs.remote_recv_time_ms)
+        } else if lhs.local_send_time_ms != rhs.local_send_time_ms {
+            lhs.local_send_time_ms.cmp(&rhs.local_send_time_ms)
         } else {
             lhs.seq_no.cmp(&rhs.seq_no)
         }
@@ -237,9 +228,8 @@ impl TryFrom<&TwccSendRecord> for AckedPacket {
         Ok(Self {
             seq_no: value.seq(),
             size: value.size().into(),
-            local_send_time: value.local_send_time(),
-            remote_recv_time,
-            local_recv_time,
+            local_send_time_ms: (value.local_send_time() - already_happened()).as_millis() as i64,
+            remote_recv_time_ms: remote_recv_time,
         })
     }
 }

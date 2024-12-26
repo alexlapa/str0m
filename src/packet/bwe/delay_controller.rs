@@ -5,10 +5,8 @@ use std::time::{Duration, Instant};
 use crate::rtp_::Bitrate;
 use crate::util::already_happened;
 
-use super::arrival_group::ArrivalGroupAccumulator;
 use super::arrival_group2::ArrivalGroupAccumulator as ArrivalGroupAccumulator2;
 use super::rate_control::RateControl;
-use super::trendline_estimator::TrendlineEstimator;
 use super::trendline_estimator2::TrendlineEstimator as TrendlineEstimator2;
 use super::{AckedPacket, BandwidthUsage};
 
@@ -23,8 +21,6 @@ const MAX_TWCC_GAP: Duration = Duration::from_millis(500);
 /// in packet arrival times for groups of packets sent together. Broadly, if the delay variation is
 /// increasing this indicates overuse.
 pub struct DelayController {
-    arrival_group_accumulator: ArrivalGroupAccumulator,
-    trendline_estimator: TrendlineEstimator,
     rate_control: RateControl,
     last_estimate: Option<Bitrate>,
 
@@ -35,12 +31,11 @@ pub struct DelayController {
     cpp_last_estimate: Option<Bitrate>,
 
     arrival_group_accumulator2: ArrivalGroupAccumulator2,
-    trendline_estimator2: TrendlineEstimator2,
+    trendline_estimator2: std::sync::Mutex<cxx::UniquePtr<crate::bridge::TrendlineEstimator>>,
     rate_control2: RateControl,
     last_estimate2: Option<Bitrate>,
 
     started_at: Instant,
-    remote_started_at: Option<Instant>,
 
     /// History of the max RTT derived for each TWCC report.
     max_rtt_history: VecDeque<Duration>,
@@ -56,10 +51,7 @@ pub struct DelayController {
 impl DelayController {
     pub fn new(initial_bitrate: Bitrate) -> Self {
         Self {
-            arrival_group_accumulator: ArrivalGroupAccumulator::default(),
-            trendline_estimator: TrendlineEstimator::new(20),
             started_at: Instant::now(),
-            remote_started_at: None,
             cpp_trendline_estimator: std::sync::Mutex::new(crate::bridge::new_trendline_estimator()),
             cpp_arrival_group_accumulator: std::sync::Mutex::new(
                 crate::bridge::new_inter_arrival_delta(),
@@ -71,7 +63,7 @@ impl DelayController {
             ),
             cpp_last_estimate: None,
             arrival_group_accumulator2: ArrivalGroupAccumulator2::default(),
-            trendline_estimator2: TrendlineEstimator2::new(20),
+            trendline_estimator2: std::sync::Mutex::new(crate::bridge::new_trendline_estimator()),
             rate_control: RateControl::new(initial_bitrate, Bitrate::kbps(40), Bitrate::gbps(10)),
             last_estimate: None,
             max_rtt_history: VecDeque::default(),
@@ -94,35 +86,42 @@ impl DelayController {
         let mut max_rtt = None;
 
         // old hyp
-        for acked_packet in acked {
-            max_rtt = max_rtt.max(Some(acked_packet.rtt()));
-            if let Some(dv) = self
-                .arrival_group_accumulator
-                .accumulate_packet(acked_packet)
-            {
-                // Got a new delay variation, add it to the trendline
-                self.trendline_estimator.add_delay_observation(dv, now);
-            }
-        }
+        // for acked_packet in acked {
+        //     max_rtt = max_rtt.max(Some(acked_packet.rtt()));
+        //     if let Some(dv) = self
+        //         .arrival_group_accumulator
+        //         .accumulate_packet(acked_packet)
+        //     {
+        //         // Got a new delay variation, add it to the trendline
+        //         self.trendline_estimator.add_delay_observation(dv, now);
+        //     }
+        // }
 
         // new hyp
         for acked_packet in acked {
+            let arrival_time_ms = acked_packet.remote_recv_time_ms as u64;
             if let Some(dv) = self.arrival_group_accumulator2.compute_deltas(acked_packet) {
-                // Got a new delay variation, add it to the trendline
-                self.trendline_estimator2.add_delay_observation(dv, now);
+                let send_time_delta = dv.send_time_delta * 1000.0;
+                let arrival_time_delta = dv.arrival_time_delta * 1000.0;
+                let arrival_time_ms = arrival_time_ms as i64;
+                self.trendline_estimator2
+                    .lock()
+                    .unwrap()
+                    .as_mut()
+                    .unwrap()
+                    .Update(
+                        arrival_time_delta,
+                        send_time_delta,
+                        arrival_time_ms,
+                    );
             }
         }
 
         // cpp hyp
         for acked_packet in acked {
-            self.remote_started_at
-                .get_or_insert(acked_packet.remote_recv_time);
-
-            let send_time_us = (acked_packet.local_send_time - self.started_at).as_micros() as u64;
-            let arrival_time_us = (acked_packet.remote_recv_time - self.remote_started_at.unwrap())
-                .as_micros() as u64;
-            let arrival_time_ms = Duration::from_micros(arrival_time_us).as_millis() as i64;
-            let system_time_us = (now - self.started_at).as_micros() as u64;
+            let send_time_us = acked_packet.local_send_time_ms as u64 * 1000;
+            let arrival_time_us = acked_packet.remote_recv_time_ms as u64 * 1000;
+            let system_time_us = (now - self.started_at).as_millis() as u64 * 1000;
             let packet_size = acked_packet.size.as_bytes_usize() as u64;
             let mut send_delta_us = 0i64;
             let mut recv_delta_us = 0i64;
@@ -143,14 +142,18 @@ impl DelayController {
             );
 
             if calculated_deltas {
+                let send_time_delta = send_delta_us as f64 / 1000.0;
+                let arrival_time_delta = recv_delta_us as f64 / 1000.0;
+                let arrival_time_ms = Duration::from_micros(arrival_time_us).as_millis() as i64;
+
                 self.cpp_trendline_estimator
                     .lock()
                     .unwrap()
                     .as_mut()
                     .unwrap()
                     .Update(
-                        send_delta_us as f64 / 1000.0,
-                        recv_delta_us as f64 / 1000.0,
+                        arrival_time_delta,
+                        send_time_delta,
                         arrival_time_ms,
                     )
             }
@@ -160,8 +163,12 @@ impl DelayController {
             self.add_max_rtt(rtt);
         }
 
-        let old_hyp = self.trendline_estimator.hypothesis();
-        let new_hyp: BandwidthUsage = self.trendline_estimator2.hypothesis();
+        let new_hyp: BandwidthUsage = self.trendline_estimator2.lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .State()
+            .into();
         let cpp_hyp: BandwidthUsage = self
             .cpp_trendline_estimator
             .lock()
@@ -171,15 +178,13 @@ impl DelayController {
             .State()
             .into();
 
-        self.update_estimate_old(old_hyp, acked_bitrate, self.mean_max_rtt, now);
         self.update_estimate_new(new_hyp, acked_bitrate, self.mean_max_rtt, now);
         self.update_estimate_cpp(cpp_hyp, acked_bitrate, self.mean_max_rtt, now);
 
         self.last_twcc_report = now;
 
         error!(
-            "From [{from}], {old_hyp} => {}, {new_hyp} => {}, {cpp_hyp} => {}",
-            self.last_estimate.unwrap_or(Bitrate::ZERO).as_u64(),
+            "From [{from}], acked = {acked_bitrate:?}, NEW: {new_hyp} => {}, CPP: {cpp_hyp} => {}",
             self.last_estimate2.unwrap_or(Bitrate::ZERO).as_u64(),
             self.cpp_last_estimate.unwrap_or(Bitrate::ZERO).as_u64()
         );
