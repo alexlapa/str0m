@@ -25,7 +25,7 @@ pub struct AckedBitrateEstimator {
     /// The size of the current window.
     current_window: Duration,
     /// The last time the window was updated.
-    last_update: Option<Duration>,
+    last_update: Option<Instant>,
 }
 
 impl AckedBitrateEstimator {
@@ -41,8 +41,7 @@ impl AckedBitrateEstimator {
         }
     }
 
-    pub(super) fn update(&mut self, receive_time: i64, packet_size: DataSize) {
-        let receive_time = Duration::from_millis(receive_time as u64);
+    pub(super) fn update(&mut self, receive_time: Instant, packet_size: DataSize) {
         let window = if self.estimate.is_none() {
             // Use the initial, larger, window at first
             self.initial_window
@@ -98,7 +97,7 @@ impl AckedBitrateEstimator {
 
     fn update_window(
         &mut self,
-        receive_time: Duration,
+        receive_time: Instant,
         packet_size: DataSize,
         window: Duration,
     ) -> Option<(Bitrate, bool)> {
@@ -141,3 +140,68 @@ impl AckedBitrateEstimator {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_no_estimate_before_initial_window_has_passed() {
+        let now = Instant::now();
+        let mut estimator =
+            AckedBitrateEstimator::new(Duration::from_millis(500), Duration::from_millis(150));
+
+        estimator.update(now, DataSize::bytes(950));
+        estimator.update(now + Duration::from_millis(250), DataSize::bytes(381));
+        estimator.update(now + Duration::from_millis(499), DataSize::bytes(1110));
+
+        assert!(
+            estimator.current_estimate().is_none(),
+            "AckedBitrateEstiamtor should produce no estimate before the initial window is reached"
+        );
+
+        estimator.update(now + Duration::from_millis(501), DataSize::bytes(1110));
+
+        let estimate = estimator.current_estimate().expect(
+            "After the first window of time has passed AckedBitrateEstimator should produce an estimate"
+        );
+
+        assert_eq!(
+            estimate.as_u64(),
+            39056,
+            "AckedBitrateEstiamtor should produce the correct bitrate"
+        );
+    }
+
+    #[test]
+    fn test_correct_estimate_after_initial_window() {
+        let now = Instant::now();
+        let mut estimator =
+            AckedBitrateEstimator::new(Duration::from_millis(500), Duration::from_millis(150));
+
+        estimator.update(now, DataSize::bytes(2500));
+        estimator.update(now + Duration::from_millis(250), DataSize::bytes(1392));
+        estimator.update(now + Duration::from_millis(499), DataSize::bytes(4021));
+        estimator.update(now + Duration::from_millis(500), DataSize::bytes(0));
+
+        assert!(
+            estimator.current_estimate().is_some(),
+            "After the first window of time has passed AckedBitrateEstimator should produce an estimate"
+        );
+
+        estimator.update(now + Duration::from_millis(550), DataSize::bytes(271));
+        estimator.update(now + Duration::from_millis(558), DataSize::bytes(813));
+        estimator.update(now + Duration::from_millis(648), DataSize::bytes(731));
+        // Will not be counted, part of next window
+        estimator.update(now + Duration::from_millis(651), DataSize::bytes(900));
+
+        let estimate = estimator.current_estimate().expect(
+            "After the first window of time has passed AckedBitrateEstimator should produce an estimate"
+        );
+
+        assert_eq!(
+            estimate.as_u64(),
+            108320,
+            "AckedBitrateEstiamtor should produce the correct bitrate"
+        );
+    }
+}

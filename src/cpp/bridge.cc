@@ -2,10 +2,6 @@
 
 namespace webrtc {
 
-std::unique_ptr<webrtc::TrendlineEstimator> new_trendline_estimator() {
-    return std::make_unique<webrtc::TrendlineEstimator>(nullptr);
-}
-
 std::unique_ptr<webrtc::InterArrivalDelta> new_inter_arrival_delta() {
     return std::make_unique<webrtc::InterArrivalDelta>(webrtc::TimeDelta::Millis(5));
 }

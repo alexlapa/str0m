@@ -7,13 +7,9 @@
 #include <memory>
 
 #include "time_delta.h"
-#include "bandwidth_usage.h"
-#include "trendline_estimator.h"
 #include "inter_arrival_delta.h"
 
 namespace webrtc {
-
-    std::unique_ptr<webrtc::TrendlineEstimator> new_trendline_estimator();
 
     std::unique_ptr<webrtc::InterArrivalDelta> new_inter_arrival_delta();
 

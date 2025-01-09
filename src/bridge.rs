@@ -14,30 +14,6 @@ pub mod ffi {
     unsafe extern "C++" {
         include!("bridge.h");
 
-        pub type BandwidthUsage;
-
-        //------------------ TrendlineEstimator
-        pub type TrendlineEstimator;
-
-        pub fn new_trendline_estimator() -> UniquePtr<TrendlineEstimator>;
-
-        pub fn Update(
-            self: Pin<&mut TrendlineEstimator>,
-            recv_delta_ms: f64,
-            send_delta_ms: f64,
-            arrival_time_ms: i64,
-        );
-
-        pub fn State(self: &TrendlineEstimator) -> BandwidthUsage;
-
-        pub fn num_of_deltas(self: &TrendlineEstimator) -> i32;
-
-        pub fn accumulated_delay(self: &TrendlineEstimator) -> f64;
-
-        pub fn smoothed_delay(self: &TrendlineEstimator) -> f64;
-
-        //------------------ InterArrivalDelta
-
         pub type InterArrivalDelta;
 
         pub fn new_inter_arrival_delta() -> UniquePtr<InterArrivalDelta>;
@@ -75,5 +51,4 @@ pub mod ffi {
     }
 }
 
-unsafe impl Send for TrendlineEstimator {}
 unsafe impl Send for InterArrivalDelta {}

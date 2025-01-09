@@ -1,10 +1,9 @@
 use std::collections::{HashMap, VecDeque};
-use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::bwe::BweKind;
-use crate::crypto::KeyingMaterial;
 use crate::crypto::SrtpProfile;
+use crate::crypto::{KeyingMaterial, SrtpCrypto};
 use crate::format::CodecConfig;
 use crate::format::PayloadParams;
 use crate::io::{DatagramSend, DATAGRAM_MTU, DATAGRAM_MTU_WARN};
@@ -15,6 +14,7 @@ use crate::packet::SendSideBandwithEstimator;
 use crate::packet::{LeakyBucketPacer, NullPacer, Pacer, PacerImpl};
 use crate::rtp::{Extension, RawPacket};
 use crate::rtp_::Direction;
+use crate::rtp_::MidRid;
 use crate::rtp_::Pt;
 use crate::rtp_::SeqNo;
 use crate::rtp_::SRTCP_OVERHEAD;
@@ -193,6 +193,7 @@ impl Session {
     pub fn set_keying_material(
         &mut self,
         mat: KeyingMaterial,
+        srtp_crypto: &SrtpCrypto,
         srtp_profile: SrtpProfile,
         active: bool,
     ) {
@@ -201,8 +202,8 @@ impl Session {
         // hand side of the key material to derive input/output.
         let left = active;
 
-        self.srtp_rx = Some(SrtpContext::new(srtp_profile, &mat, !left));
-        self.srtp_tx = Some(SrtpContext::new(srtp_profile, &mat, left));
+        self.srtp_rx = Some(SrtpContext::new(srtp_crypto, srtp_profile, &mat, !left));
+        self.srtp_tx = Some(SrtpContext::new(srtp_crypto, srtp_profile, &mat, left));
     }
 
     pub fn handle_timeout(&mut self, now: Instant) -> Result<(), RtcError> {
@@ -248,9 +249,11 @@ impl Session {
             return;
         };
 
+        let midrid = MidRid(padding_request.mid, None);
+
         let stream = self
             .streams
-            .stream_tx_by_mid_rid(padding_request.mid, None)
+            .stream_tx_by_midrid(midrid)
             .expect("pacer to use an existing stream");
 
         stream.generate_padding(padding_request.padding);
@@ -279,11 +282,11 @@ impl Session {
         self.handle_rtp(now, header, message);
     }
 
-    pub fn handle_rtcp_receive(&mut self, now: Instant, message: &[u8], from: SocketAddr) {
+    pub fn handle_rtcp_receive(&mut self, now: Instant, message: &[u8]) {
         // According to spec, the outer enclosing SRTCP packet should always be a SR or RR,
         // even if it's irrelevant and empty.
         // In practice I'm not sure that is happening, because libWebRTC hates empty packets.
-        self.handle_rtcp(now, message, from);
+        self.handle_rtcp(now, message);
     }
 
     fn mid_and_ssrc_for_header(&mut self, now: Instant, header: &RtpHeader) -> Option<(Mid, Ssrc)> {
@@ -335,14 +338,18 @@ impl Session {
             // Case A - use the rid_repair header to identify RTX.
             let is_main = header.ext_vals.rid.is_some();
 
+            let midrid = MidRid(mid, Some(rid));
+
             self.streams
-                .map_dynamic_by_rid(header.ssrc, mid, rid, media, *payload, is_main);
+                .map_dynamic_by_rid(header.ssrc, midrid, media, *payload, is_main);
         } else {
             // Case B - the payload type identifies RTX.
             let is_main = payload.pt() == header.payload_type;
 
+            let midrid = MidRid(mid, None);
+
             self.streams
-                .map_dynamic_by_pt(header.ssrc, mid, media, *payload, is_main);
+                .map_dynamic_by_pt(header.ssrc, midrid, media, *payload, is_main);
         }
     }
 
@@ -494,7 +501,7 @@ impl Session {
         }
     }
 
-    fn handle_rtcp(&mut self, now: Instant, buf: &[u8], from: SocketAddr) -> Option<()> {
+    fn handle_rtcp(&mut self, now: Instant, buf: &[u8]) -> Option<()> {
         let srtp: &mut SrtpContext = self.srtp_rx.as_mut()?;
         let unprotected = srtp.unprotect_rtcp(buf)?;
 
@@ -510,14 +517,10 @@ impl Session {
         for fb in RtcpFb::from_rtcp(self.feedback_rx.drain(..)) {
             if let RtcpFb::Twcc(twcc) = fb {
                 trace!("Handle TWCC: {:?}", twcc);
-                let range = self.twcc_tx_register.apply_report(twcc, now);
+                let maybe_records = self.twcc_tx_register.apply_report(twcc, now);
 
-                if let Some(bwe) = &mut self.bwe {
-                    let records = range.and_then(|range| self.twcc_tx_register.send_records(range));
-
-                    if let Some(records) = records {
-                        bwe.update(records, now, from);
-                    }
+                if let (Some(maybe_records), Some(bwe)) = (maybe_records, &mut self.bwe) {
+                    bwe.update(maybe_records, now);
                 }
                 need_configure_pacer = true;
 
@@ -703,8 +706,7 @@ impl Session {
         let buf = &mut self.poll_packet_buf;
         let twcc_seq = self.twcc;
 
-        // TODO: allow for sending simulcast
-        let stream = self.streams.stream_tx_by_mid_rid(media.mid(), None)?;
+        let stream = self.streams.stream_tx_by_midrid(MidRid(mid, None))?;
 
         let params = &self.codec_config;
         let exts = media.remote_extmap();
@@ -956,9 +958,8 @@ impl Bwe {
         &mut self,
         records: impl Iterator<Item = &'t crate::rtp_::TwccSendRecord>,
         now: Instant,
-        from: SocketAddr,
     ) {
-        self.bwe.update(records, now, from);
+        self.bwe.update(records, now);
     }
 
     fn poll_estimate(&mut self) -> Option<Bitrate> {

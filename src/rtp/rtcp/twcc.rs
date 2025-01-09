@@ -1,5 +1,6 @@
 use std::collections::vec_deque;
 use std::collections::VecDeque;
+use std::fmt;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
@@ -9,7 +10,7 @@ use super::{RtcpType, SeqNo, Ssrc, TransportType};
 /// Transport Wide Congestion Control.
 ///
 /// Sent in response to every RTP packet, but does ranges of packets to respond to.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Twcc {
     /// Sender of this feedback. Mostly irrelevant, but part of RTCP packets.
     pub sender_ssrc: Ssrc,
@@ -41,10 +42,13 @@ impl Twcc {
     /// Iterate over the reported sequences.
     pub fn into_iter(self, time_zero: Instant, extend_from: SeqNo) -> TwccIter {
         let millis = self.reference_time as u64 * 64;
-        let time_base = Duration::from_millis(millis);
+        let time_base = time_zero + Duration::from_millis(millis);
         let base_seq = extend_u16(Some(*extend_from), self.base_seq);
+        let last_seq = base_seq + self.status_count as u64;
+
         TwccIter {
             base_seq,
+            last_seq,
             time_base,
             index: 0,
             twcc: self,
@@ -54,15 +58,22 @@ impl Twcc {
 
 pub struct TwccIter {
     base_seq: u64,
-    time_base: Duration,
+    last_seq: u64,
+    time_base: Instant,
     index: usize,
     twcc: Twcc,
 }
 
 impl Iterator for TwccIter {
-    type Item = (SeqNo, PacketStatus, Option<Duration>);
+    type Item = (SeqNo, PacketStatus, Option<Instant>);
 
     fn next(&mut self) -> Option<Self::Item> {
+        let seq: SeqNo = (self.base_seq + self.index as u64).into();
+
+        if *seq == self.last_seq {
+            return None;
+        }
+
         let head = self.twcc.chunks.front()?;
 
         let (status, amount) = match head {
@@ -90,7 +101,6 @@ impl Iterator for TwccIter {
             }
         };
 
-        // asdasdasdasdasdasdasdasdasdasd
         let instant = match status {
             PacketStatus::NotReceived => None,
             PacketStatus::ReceivedSmallDelta => match self.twcc.delta.pop_front()? {
@@ -114,7 +124,6 @@ impl Iterator for TwccIter {
         if let Some(new_timebase) = instant {
             self.time_base = new_timebase;
         }
-        let seq: SeqNo = (self.base_seq + self.index as u64).into();
 
         self.index += 1;
         if self.index == amount as usize {
@@ -218,7 +227,7 @@ pub struct TwccRecvRegister {
     ///
     /// Once the queue has some content, we will always keep at least one entry to "remember" for the
     /// next report.
-    queue: VecDeque<Receiption>,
+    queue: VecDeque<Receipt>,
 
     /// Index into queue from where we start reporting on next build_report().
     report_from: usize,
@@ -243,7 +252,7 @@ pub struct TwccRecvRegister {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Receiption {
+struct Receipt {
     seq: SeqNo,
     time: Instant,
 }
@@ -285,7 +294,7 @@ impl TwccRecvRegister {
                     }
                 }
 
-                self.queue.insert(idx, Receiption { seq, time });
+                self.queue.insert(idx, Receipt { seq, time });
 
                 if idx < self.report_from {
                     self.report_from = idx;
@@ -491,7 +500,7 @@ impl TwccRecvRegister {
 /// Interims are deltas between `Receiption` which is an intermediary format before
 /// we populate the Twcc report.
 fn build_interims(
-    queue: &VecDeque<Receiption>,
+    queue: &VecDeque<Receipt>,
     report_from: usize,
     base_seq: SeqNo,
     base_time: Instant,
@@ -985,7 +994,7 @@ impl<'a> TryFrom<&'a [u8]> for PacketChunk {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TwccSendRegister {
     /// How many send records to keep.
     keep: usize,
@@ -995,6 +1004,10 @@ pub struct TwccSendRegister {
 
     /// 0 offset for remote time in Twcc structs.
     time_zero: Option<Instant>,
+
+    /// Counter of invocations of apply_report. Used to identify
+    /// which TwccSendRecord resulted from each invocation.
+    apply_report_counter: u64,
 
     /// Last registered Twcc number.
     last_registered: SeqNo,
@@ -1010,7 +1023,7 @@ impl<'a> IntoIterator for &'a TwccSendRegister {
 }
 
 /// Record for a send entry in twcc.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TwccSendRecord {
     /// Twcc sequence number for a packet we sent.
     seq: SeqNo,
@@ -1045,7 +1058,7 @@ impl TwccSendRecord {
     }
 
     /// The time indicated by the remote side for when they received the packet.
-    pub fn remote_recv_time(&self) -> Option<i64> {
+    pub fn remote_recv_time(&self) -> Option<Instant> {
         self.recv_report.as_ref().and_then(|r| r.remote_recv_time)
     }
 
@@ -1062,7 +1075,10 @@ pub struct TwccRecvReport {
     local_recv_time: Instant,
 
     /// The remote time the other side received the seq.
-    remote_recv_time: Option<i64>,
+    remote_recv_time: Option<Instant>,
+
+    /// The invocation count of apply_report(). Used for filtering.
+    apply_report_counter: u64,
 }
 
 impl TwccSendRegister {
@@ -1071,6 +1087,7 @@ impl TwccSendRegister {
             keep,
             queue: VecDeque::new(),
             time_zero: None,
+            apply_report_counter: 0,
             last_registered: 0.into(),
         }
     }
@@ -1093,12 +1110,19 @@ impl TwccSendRegister {
 
     /// Apply a TWCC RTCP report.
     ///
-    /// Returns a range of the sequence numbers for the applied packets if the report was
-    /// successfully applied.
-    pub fn apply_report(&mut self, twcc: Twcc, now: Instant) -> Option<RangeInclusive<SeqNo>> {
+    /// Returns iterator over [`TwccSendRecord`]s included in the given [`Twcc`]
+    /// except for ones that was already acked and returned before.
+    pub fn apply_report(
+        &mut self,
+        twcc: Twcc,
+        now: Instant,
+    ) -> Option<impl Iterator<Item = &TwccSendRecord>> {
         if self.time_zero.is_none() {
             self.time_zero = Some(now);
         }
+
+        self.apply_report_counter += 1;
+        let apply_report_counter = self.apply_report_counter;
 
         let time_zero = self.time_zero.unwrap();
         let head_seq = self.queue.front().map(|r| r.seq)?;
@@ -1115,14 +1139,30 @@ impl TwccSendRegister {
             now: Instant,
             r: &mut TwccSendRecord,
             seq: SeqNo,
-            instant: Option<Duration>,
+            remote_recv_time: Option<Instant>,
+            apply_report_counter: u64,
         ) -> bool {
             if r.seq != seq {
                 return false;
             }
+
+            let apply_report_counter = if let Some(rr) = r.recv_report {
+                // This packed was already acked and handled before so carry
+                // over previous apply_report_counter, so it won't be included
+                // in the current apply_report() call result.
+                rr.remote_recv_time
+                    .map(|_| rr.apply_report_counter)
+                    .unwrap_or_else(|| apply_report_counter)
+            } else {
+                apply_report_counter
+            };
+
+            // Carry over remote recv time if this packet was acked before.
+            let remote_recv_time = r.remote_recv_time().or(remote_recv_time);
             let recv_report = TwccRecvReport {
                 local_recv_time: now,
-                remote_recv_time: instant.map(|r| r.as_millis().try_into().unwrap()),
+                remote_recv_time,
+                apply_report_counter,
             };
             r.recv_report = Some(recv_report);
 
@@ -1136,7 +1176,13 @@ impl TwccSendRegister {
 
         let mut problematic_seq = None;
 
-        if !update(now, first_record, first_seq_no, first_instant) {
+        if !update(
+            now,
+            first_record,
+            first_seq_no,
+            first_instant,
+            apply_report_counter,
+        ) {
             problematic_seq = Some((first_record.seq, first_seq_no));
         }
 
@@ -1146,7 +1192,7 @@ impl TwccSendRegister {
                 break;
             }
 
-            if !update(now, record, seq, instant) {
+            if !update(now, record, seq, instant, apply_report_counter) {
                 problematic_seq = Some((record.seq, seq));
             }
             last_seq_no = seq;
@@ -1161,13 +1207,29 @@ impl TwccSendRegister {
             );
         }
 
-        Some(first_seq_no..=last_seq_no)
-    }
+        let first_index = self
+            .queue
+            .binary_search_by_key(&first_seq_no, |r| r.seq)
+            .expect("first_seq_no to be registered");
 
-    pub fn send_record(&self, seq: SeqNo) -> Option<&TwccSendRecord> {
-        let index = self.queue.binary_search_by_key(&seq, |r| r.seq).ok()?;
+        let range = first_seq_no..=last_seq_no;
 
-        Some(&self.queue[index])
+        Some(
+            TwccSendRecordsIter {
+                range: range.clone(),
+                index: first_index,
+                current: first_seq_no,
+                queue: &self.queue,
+            }
+            // We only want the records that were registered in this invocation of
+            // apply_report_counter(). This is to not double count in the BWE,
+            // which is the consumer of this returned iterator.
+            .filter(move |s| {
+                s.recv_report
+                    .map(|r| r.apply_report_counter == apply_report_counter)
+                    .unwrap_or_default()
+            }),
+        )
     }
 
     /// Calculate the egress loss for given time window.
@@ -1204,26 +1266,6 @@ impl TwccSendRegister {
         }
 
         Some((lost as f32) / (total as f32))
-    }
-
-    /// Get all send records in a range.
-    pub fn send_records(
-        &self,
-        range: RangeInclusive<SeqNo>,
-    ) -> Option<impl Iterator<Item = &TwccSendRecord>> {
-        let first_index = self
-            .queue
-            .binary_search_by_key(range.start(), |r| r.seq)
-            .ok()?;
-
-        let current = *range.start();
-
-        Some(TwccSendRecordsIter {
-            range,
-            index: first_index,
-            current,
-            queue: &self.queue,
-        })
     }
 }
 
@@ -1335,3 +1377,787 @@ impl<'a> Iterator for TwccSendRecordsIter<'a> {
 // Same as the question above, this is a truncation to (0) for not received and (1) for
 // received, small delta.
 
+impl fmt::Debug for Twcc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Twcc")
+            .field("sender_ssrc", &self.sender_ssrc)
+            .field("ssrc", &self.ssrc)
+            .field("base_seq", &self.base_seq)
+            .field("status_count", &self.status_count)
+            .field("reference_time", &self.reference_time)
+            .field("feedback_count", &self.feedback_count)
+            .field("chunks", &self.chunks)
+            .field("delta", &self.delta.len())
+            .finish()
+    }
+}
+
+#[allow(clippy::assign_op_pattern)]
+#[cfg(test)]
+mod test {
+    use std::time::Duration;
+
+    use super::*;
+
+    use Delta::*;
+    use PacketChunk::*;
+    use PacketStatus::*;
+
+    #[test]
+    fn register_write_parse_small_delta() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        reg.update_seq(11.into(), now + Duration::from_millis(12));
+        reg.update_seq(12.into(), now + Duration::from_millis(23));
+        reg.update_seq(13.into(), now + Duration::from_millis(43));
+
+        let report = reg.build_report(1000).unwrap();
+        let mut buf = vec![0_u8; 1500];
+        let n = report.write_to(&mut buf[..]);
+        buf.truncate(n);
+
+        let header: RtcpHeader = (&buf[..]).try_into().unwrap();
+        let parsed: Twcc = (&buf[4..]).try_into().unwrap();
+
+        assert_eq!(header, report.header());
+        assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn register_write_parse_small_delta_missing() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        reg.update_seq(11.into(), now + Duration::from_millis(12));
+        reg.update_seq(12.into(), now + Duration::from_millis(23));
+        // 13 is not there
+        reg.update_seq(14.into(), now + Duration::from_millis(43));
+
+        let report = reg.build_report(1000).unwrap();
+        let mut buf = vec![0_u8; 1500];
+        let n = report.write_to(&mut buf[..]);
+        buf.truncate(n);
+
+        let header: RtcpHeader = (&buf[..]).try_into().unwrap();
+        let parsed: Twcc = (&buf[4..]).try_into().unwrap();
+
+        assert_eq!(header, report.header());
+        assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn register_write_parse_large_delta() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        reg.update_seq(11.into(), now + Duration::from_millis(70));
+        reg.update_seq(12.into(), now + Duration::from_millis(140));
+        reg.update_seq(13.into(), now + Duration::from_millis(210));
+
+        let report = reg.build_report(1000).unwrap();
+        let mut buf = vec![0_u8; 1500];
+        let n = report.write_to(&mut buf[..]);
+        buf.truncate(n);
+
+        let header: RtcpHeader = (&buf[..]).try_into().unwrap();
+        let parsed: Twcc = (&buf[4..]).try_into().unwrap();
+
+        assert_eq!(header, report.header());
+        assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn register_write_parse_mixed_delta() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        reg.update_seq(11.into(), now + Duration::from_millis(12));
+        reg.update_seq(12.into(), now + Duration::from_millis(140));
+        reg.update_seq(13.into(), now + Duration::from_millis(152));
+
+        let report = reg.build_report(1000).unwrap();
+        let mut buf = vec![0_u8; 1500];
+        let n = report.write_to(&mut buf[..]);
+        buf.truncate(n);
+
+        let header: RtcpHeader = (&buf[..]).try_into().unwrap();
+        let parsed: Twcc = (&buf[4..]).try_into().unwrap();
+
+        assert_eq!(header, report.header());
+        assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn too_big_time_gap_requires_two_reports() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        reg.update_seq(11.into(), now + Duration::from_millis(12));
+        reg.update_seq(12.into(), now + Duration::from_millis(9000));
+
+        let _ = reg.build_report(1000).unwrap();
+        let report2 = reg.build_report(1000).unwrap();
+
+        // 9000 milliseconds is not possible to set as exact reference time which
+        // is in multiples of 64ms. 9000/64 = 140.625.
+        assert_eq!(report2.reference_time, 140);
+
+        // 140 * 64 = 8960
+        // So the first offset must be 40ms, i.e. 40_000us / 250us = 160
+        assert_eq!(report2.delta[0], Small(160));
+    }
+
+    #[test]
+    fn report_padded_to_even_word() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+
+        let report = reg.build_report(1000).unwrap();
+        let mut buf = vec![0_u8; 1500];
+        let n = report.write_to(&mut buf[..]);
+
+        assert!(n % 4 == 0);
+    }
+
+    #[test]
+    fn report_truncated_to_max_byte_size() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        reg.update_seq(11.into(), now + Duration::from_millis(12));
+        reg.update_seq(12.into(), now + Duration::from_millis(140));
+        reg.update_seq(13.into(), now + Duration::from_millis(152));
+
+        let report = reg.build_report(28).unwrap();
+
+        assert_eq!(report.status_count, 2);
+        assert_eq!(report.chunks, vec![Run(ReceivedSmallDelta, 2)]);
+        assert_eq!(report.delta, vec![Small(0), Small(48)]);
+
+        let report = reg.build_report(28).unwrap();
+
+        assert_eq!(report.status_count, 2);
+        assert_eq!(report.chunks, vec![Run(ReceivedSmallDelta, 2)]);
+        assert_eq!(report.delta, vec![Small(48), Small(48)]);
+    }
+
+    #[test]
+    fn truncated_counts_gaps_correctly() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        // gap
+        reg.update_seq(13.into(), now + Duration::from_millis(12));
+        reg.update_seq(14.into(), now + Duration::from_millis(140));
+        reg.update_seq(15.into(), now + Duration::from_millis(152));
+
+        let report = reg.build_report(32).unwrap();
+
+        assert_eq!(report.status_count, 4);
+        assert_eq!(
+            report.chunks,
+            vec![
+                Run(ReceivedSmallDelta, 1),
+                Run(NotReceived, 2),
+                Run(ReceivedSmallDelta, 1)
+            ]
+        );
+        assert_eq!(report.delta, vec![Small(0), Small(48)]);
+    }
+
+    #[test]
+    fn run_max_is_8192() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(0.into(), now + Duration::from_millis(0));
+        reg.update_seq(8194.into(), now + Duration::from_millis(10));
+
+        let report = reg.build_report(1000).unwrap();
+
+        assert_eq!(report.status_count, 8195);
+        assert_eq!(
+            report.chunks,
+            vec![
+                VectorSingle(8192, 14),
+                Run(NotReceived, 8180),
+                Run(ReceivedSmallDelta, 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn single_followed_by_missing() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(0));
+        reg.update_seq(12.into(), now + Duration::from_millis(10));
+        reg.update_seq(100.into(), now + Duration::from_millis(20));
+
+        let report = reg.build_report(2016).unwrap();
+
+        assert_eq!(report.status_count, 91);
+        assert_eq!(
+            report.chunks,
+            vec![
+                VectorSingle(10240, 14),
+                Run(NotReceived, 76),
+                Run(ReceivedSmallDelta, 1)
+            ]
+        );
+        assert_eq!(report.delta, vec![Small(0), Small(40), Small(40)]);
+    }
+
+    #[test]
+    fn time_jump_small_back_for_second_report() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(8000));
+        let _ = reg.build_report(2016).unwrap();
+
+        reg.update_seq(9.into(), now + Duration::from_millis(0));
+        let report = reg.build_report(2016).unwrap();
+
+        assert_eq!(report.status_count, 2);
+        assert_eq!(report.chunks, vec![Run(ReceivedLargeOrNegativeDelta, 2)]);
+        assert_eq!(report.delta, vec![Large(-32000), Large(32000)]);
+    }
+
+    #[test]
+    fn time_jump_large_back_for_second_report() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(9000));
+        let _ = reg.build_report(2016).unwrap();
+
+        reg.update_seq(9.into(), now + Duration::from_millis(0));
+        assert!(reg.build_report(2016).is_none());
+
+        assert_eq!(reg.queue.len(), 1);
+    }
+
+    #[test]
+    fn empty_twcc() {
+        let twcc = Twcc {
+            sender_ssrc: 0.into(),
+            ssrc: 0.into(),
+            base_seq: 0,
+            status_count: 0,
+            reference_time: 0,
+            feedback_count: 0,
+            chunks: VecDeque::new(),
+            delta: VecDeque::new(),
+        };
+
+        let mut buf = vec![0_u8; 1500];
+        let n = twcc.write_to(&mut buf[..]);
+        buf.truncate(n);
+
+        let header: RtcpHeader = (&buf[..]).try_into().unwrap();
+        let parsed: Twcc = (&buf[4..]).try_into().unwrap();
+
+        assert_eq!(header, twcc.header());
+        assert_eq!(parsed, twcc);
+    }
+
+    #[test]
+    fn negative_deltas() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        reg.update_seq(10.into(), now + Duration::from_millis(12));
+        reg.update_seq(11.into(), now + Duration::from_millis(0));
+        reg.update_seq(12.into(), now + Duration::from_millis(23));
+
+        let report = reg.build_report(1000).unwrap();
+
+        assert_eq!(report.status_count, 3);
+        assert_eq!(report.base_seq, 10);
+        assert_eq!(report.reference_time, 0);
+        assert_eq!(report.chunks, vec![VectorDouble(6400, 7)]);
+        assert_eq!(report.delta, vec![Small(0), Large(-48), Small(92)]);
+
+        let base = reg.time_start.unwrap();
+
+        let mut iter = report.into_iter(base, 10.into());
+        assert_eq!(
+            iter.next(),
+            Some((
+                10.into(),
+                PacketStatus::ReceivedSmallDelta,
+                Some(base + Duration::from_millis(0))
+            ))
+        );
+        assert_eq!(
+            iter.next(),
+            Some((
+                11.into(),
+                PacketStatus::ReceivedLargeOrNegativeDelta,
+                Some(base.checked_sub(Duration::from_millis(12)).unwrap())
+            ))
+        );
+        assert_eq!(
+            iter.next(),
+            Some((
+                12.into(),
+                PacketStatus::ReceivedSmallDelta,
+                Some(base + Duration::from_millis(11))
+            ))
+        );
+    }
+
+    #[test]
+    fn twcc_fuzz_fail() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        let now = Instant::now();
+
+        // [Register(, ), Register(, ), Register(, ), BuildReport(43)]
+
+        reg.update_seq(4542.into(), now + Duration::from_millis(2373281424));
+        reg.update_seq(15918.into(), now + Duration::from_millis(2373862820));
+        reg.update_seq(8405.into(), now + Duration::from_millis(2379074367));
+
+        let report = reg.build_report(43).unwrap();
+
+        let mut buf = vec![0_u8; 1500];
+        let n = report.write_to(&mut buf[..]);
+        buf.truncate(n);
+
+        let header: RtcpHeader = match (&buf[..]).try_into() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+        let parsed: Twcc = match (&buf[4..]).try_into() {
+            Ok(v) => v,
+            Err(_) => return,
+        };
+
+        assert_eq!(header, report.header());
+        assert_eq!(parsed, report);
+    }
+
+    #[test]
+    fn twcc_large_time_delta_edges() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        // Stretch the boundaries of the i16 type used for deltas
+        let now = Instant::now();
+        reg.update_seq(0.into(), now + Duration::from_micros(8_192_000));
+        reg.update_seq(1.into(), now + Duration::from_micros(0));
+        reg.update_seq(2.into(), now + Duration::from_micros(8_191_750));
+
+        let report = reg.build_report(1000).unwrap();
+
+        assert_eq!(report.status_count, 3);
+        assert_eq!(report.delta, vec![Small(0), Large(-32768), Large(32767)]);
+    }
+
+    #[test]
+    fn twcc_crazy_negative_time_delta() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        // Deltas so big they wrap around the bounds of an i32 to become small again.
+        // These constants are chosen carefully to look normal when wrapped
+        let now = Instant::now();
+        reg.update_seq(0.into(), now + Duration::from_micros(4_294_967_547)); // Wraps to -251
+        reg.update_seq(1.into(), now + Duration::from_micros(0));
+
+        // The bogus value should be ignored
+        let report = reg.build_report(1000).unwrap();
+        assert_eq!(report.status_count, 1);
+        assert_eq!(report.delta, vec![Small(0)]);
+    }
+
+    #[test]
+    fn twcc_crazy_positive_time_delta() {
+        let mut reg = TwccRecvRegister::new(100);
+
+        // Deltas so big they wrap around the bounds of an i32 to become small again.
+        // These constants are chosen carefully to look normal when wrapped
+        let now = Instant::now();
+        reg.update_seq(0.into(), now + Duration::from_micros(0));
+        reg.update_seq(1.into(), now + Duration::from_micros(4_294_967_547)); // Wraps to 251
+
+        // The bogus value should be ignored
+        let report = reg.build_report(1000).unwrap();
+        assert_eq!(report.status_count, 1);
+        assert_eq!(report.delta, vec![Small(0)]);
+    }
+
+    #[test]
+    fn test_send_register_apply_report_for_old_seq_numbers() {
+        let mut reg = TwccSendRegister::new(25);
+        let mut now = Instant::now();
+
+        for i in 0..50 {
+            reg.register_seq(i.into(), now, 0);
+            now = now + Duration::from_micros(15);
+        }
+
+        // At this point the front of the internal queue should be seq no 25.
+        //
+        // Set time zero base with empty packet
+        reg.apply_report(
+            Twcc {
+                sender_ssrc: Ssrc::new(),
+                ssrc: Ssrc::new(),
+                base_seq: 0,
+                status_count: 0,
+                reference_time: 0,
+                feedback_count: 0,
+                chunks: [].into(),
+                delta: [].into(),
+            },
+            now,
+        );
+        now = now + Duration::from_millis(35);
+
+        let iter = reg.apply_report(
+            Twcc {
+                sender_ssrc: Ssrc::new(),
+                ssrc: Ssrc::new(),
+                base_seq: 20,
+                status_count: 8,
+                reference_time: 35,
+                feedback_count: 0,
+                chunks: [PacketChunk::Run(PacketStatus::ReceivedSmallDelta, 8)].into(),
+                delta: [
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                ]
+                .into(),
+            },
+            now,
+        );
+        let iter = iter.unwrap();
+
+        for record in iter {
+            assert!(
+                record.recv_report.is_some(),
+                "Report should have recorded recv_report"
+            );
+        }
+    }
+
+    #[test]
+    fn test_twcc_iter_correct_deltas() {
+        let twcc = Twcc {
+            sender_ssrc: 0.into(),
+            ssrc: 0.into(),
+            base_seq: 1,
+            status_count: 12,
+            reference_time: 1337,
+            feedback_count: 0,
+            chunks: [
+                PacketChunk::Run(PacketStatus::ReceivedSmallDelta, 2),
+                PacketChunk::VectorDouble(0b1101_0010_0101_0000, 7),
+                PacketChunk::Run(PacketStatus::ReceivedLargeOrNegativeDelta, 3),
+            ]
+            .into(),
+            delta: [
+                // Run of length 2
+                Delta::Small(10),
+                Delta::Small(15),
+                // Double status vector with 4 deltas
+                Delta::Small(7),
+                Delta::Large(280),
+                Delta::Small(3),
+                Delta::Small(13),
+                // Run of length 3
+                Delta::Large(-37),
+                Delta::Large(32),
+                Delta::Large(89),
+            ]
+            .into(),
+        };
+
+        let now = Instant::now();
+        let base = now + Duration::from_millis(1337 * 64);
+        let expected = vec![
+            (
+                1.into(),
+                PacketStatus::ReceivedSmallDelta,
+                Some(base + Duration::from_micros(10 * 250)),
+            ),
+            (
+                2.into(),
+                PacketStatus::ReceivedSmallDelta,
+                Some(base + Duration::from_micros(25 * 250)),
+            ),
+            (
+                3.into(),
+                PacketStatus::ReceivedSmallDelta,
+                Some(base + Duration::from_micros(32 * 250)),
+            ),
+            (4.into(), PacketStatus::NotReceived, None),
+            (
+                5.into(),
+                PacketStatus::ReceivedLargeOrNegativeDelta,
+                Some(base + Duration::from_micros(312 * 250)),
+            ),
+            (
+                6.into(),
+                PacketStatus::ReceivedSmallDelta,
+                Some(base + Duration::from_micros(315 * 250)),
+            ),
+            (
+                7.into(),
+                PacketStatus::ReceivedSmallDelta,
+                Some(base + Duration::from_micros(328 * 250)),
+            ),
+            (8.into(), PacketStatus::NotReceived, None),
+            (9.into(), PacketStatus::NotReceived, None),
+            (
+                10.into(),
+                PacketStatus::ReceivedLargeOrNegativeDelta,
+                Some(base + Duration::from_micros(291 * 250)),
+            ),
+            (
+                11.into(),
+                PacketStatus::ReceivedLargeOrNegativeDelta,
+                Some(base + Duration::from_micros(323 * 250)),
+            ),
+            (
+                12.into(),
+                PacketStatus::ReceivedLargeOrNegativeDelta,
+                Some(base + Duration::from_micros(412 * 250)),
+            ),
+        ];
+
+        let result: Vec<_> = twcc.into_iter(now, 1.into()).collect();
+
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_twcc_iter_limited_with_status_count() {
+        let status_count = 3;
+
+        // [(1, NotReceived), (2, ReceivedSmallDelta), (3, ReceivedSmallDelta)]
+        let twcc_iter_count = Twcc {
+            sender_ssrc: 1.into(),
+            ssrc: 2.into(),
+            base_seq: 1,
+            status_count,
+            reference_time: 406753,
+            feedback_count: 1,
+            chunks: VecDeque::from(vec![VectorDouble(0b00_00_01_01_00_00_00_00, 7)]),
+            delta: VecDeque::from(vec![Small(236), Small(1)]),
+        }
+        .into_iter(Instant::now(), 1.into())
+        .count();
+
+        assert_eq!(twcc_iter_count, status_count as usize);
+    }
+
+    #[test]
+    fn test_twcc_register_send_records() {
+        let mut reg = TwccSendRegister::new(25);
+        let mut now = Instant::now();
+        for i in 0..25 {
+            reg.register_seq(i.into(), now, 0);
+            now = now + Duration::from_micros(15);
+        }
+
+        let iter = reg
+            .apply_report(
+                Twcc {
+                    sender_ssrc: Ssrc::new(),
+                    ssrc: Ssrc::new(),
+                    base_seq: 0,
+                    status_count: 8,
+                    reference_time: 35,
+                    feedback_count: 0,
+                    chunks: [PacketChunk::Run(PacketStatus::ReceivedSmallDelta, 8)].into(),
+                    delta: [
+                        Delta::Small(10),
+                        Delta::Small(10),
+                        Delta::Small(10),
+                        Delta::Small(10),
+                        Delta::Small(10),
+                        Delta::Small(10),
+                        Delta::Small(10),
+                        Delta::Small(10),
+                    ]
+                    .into(),
+                },
+                now,
+            )
+            .expect("apply_report to return Some(_)");
+
+        assert_eq!(
+            iter.map(|r| *r.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5, 6, 7]
+        );
+    }
+
+    #[test]
+    fn test_twcc_send_register_loss() {
+        let mut reg = TwccSendRegister::new(25);
+        let mut now = Instant::now();
+        for i in 0..9 {
+            reg.register_seq(i.into(), now, 0);
+            now = now + Duration::from_millis(15);
+        }
+
+        now = now + Duration::from_millis(5);
+        #[allow(unused_must_use)]
+        reg.apply_report(
+            Twcc {
+                sender_ssrc: Ssrc::new(),
+                ssrc: Ssrc::new(),
+                base_seq: 0,
+                status_count: 9,
+                reference_time: 35,
+                feedback_count: 0,
+                chunks: [
+                    PacketChunk::VectorDouble(0b11_01_01_01_00_01_00_01, 7),
+                    PacketChunk::Run(PacketStatus::ReceivedSmallDelta, 2),
+                ]
+                .into(),
+                delta: [
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                    Delta::Small(10),
+                ]
+                .into(),
+            },
+            now,
+        )
+        .expect("apply_report to return Some(_)");
+
+        now = now + Duration::from_millis(20);
+        let loss = reg
+            .loss(Duration::from_millis(150), now)
+            .expect("Should be able to calcualte loss");
+
+        let pct = (loss * 100.0).floor() as u32;
+
+        assert_eq!(
+            pct, 25,
+            "The loss percentage should be 25 as 2 out of 8 packets are lost"
+        );
+    }
+
+    #[test]
+    fn test_twcc_recv_register_loss() {
+        let mut reg = TwccRecvRegister::new(25);
+        let mut now = Instant::now();
+
+        for i in 0..10 {
+            if i == 3 || i == 7 {
+                // simulate loss
+                continue;
+            }
+            reg.update_seq(i.into(), now);
+            now = now + Duration::from_millis(50);
+        }
+
+        assert_eq!(reg.loss(), Some(2.0 / 10.0));
+
+        for i in 10..20 {
+            if i == 11 || i == 13 || i == 15 || i == 17 {
+                // simulate loss
+                continue;
+            }
+            reg.update_seq(i.into(), now);
+            now = now + Duration::from_millis(50);
+        }
+
+        assert_eq!(reg.loss(), Some(4.0 / 10.0));
+    }
+
+    #[test]
+    fn no_acked_duplicates_when_reordered() {
+        let now = Instant::now();
+        let mut twcc_gen = TwccRecvRegister::new(1000);
+        let mut twcc_handler = TwccSendRegister::new(1000);
+
+        twcc_handler.register_seq(1.into(), now + Duration::from_millis(1), 0);
+        twcc_handler.register_seq(2.into(), now + Duration::from_millis(2), 0);
+        twcc_handler.register_seq(3.into(), now + Duration::from_millis(3), 0);
+        twcc_handler.register_seq(4.into(), now + Duration::from_millis(4), 0);
+
+        {
+            let acked_packets = twcc_handler
+                .apply_report(
+                    {
+                        // 3rd packet is delayed
+                        twcc_gen.update_seq(1.into(), now + Duration::from_millis(5));
+                        twcc_gen.update_seq(2.into(), now + Duration::from_millis(6));
+                        twcc_gen.update_seq(4.into(), now + Duration::from_millis(7));
+                        twcc_gen.build_report(10_000).unwrap()
+                    },
+                    now + Duration::from_millis(8),
+                )
+                .unwrap()
+                .filter_map(|sr| sr.remote_recv_time().map(|_| sr.seq.as_u16()))
+                .collect::<Vec<_>>();
+
+            assert_eq!(acked_packets, [1, 2, 4]);
+        }
+
+        twcc_handler.register_seq(5.into(), now + Duration::from_millis(9), 0);
+        twcc_handler.register_seq(6.into(), now + Duration::from_millis(10), 0);
+        twcc_handler.register_seq(7.into(), now + Duration::from_millis(11), 0);
+
+        {
+            let acked_packets = twcc_handler
+                .apply_report(
+                    {
+                        // So the receipt order is 1, 2, 4, 3, 7
+                        twcc_gen.update_seq(3.into(), now + Duration::from_millis(12));
+                        twcc_gen.update_seq(7.into(), now + Duration::from_millis(13));
+                        twcc_gen.build_report(10_000).unwrap()
+                    },
+                    now + Duration::from_millis(14),
+                )
+                .unwrap()
+                .filter_map(|sr| sr.remote_recv_time().map(|_| sr.seq.as_u16()))
+                .collect::<Vec<_>>();
+
+            // 3 was delayed before and is acked now
+            // 4 is excluded since it was already returned from the previous call
+            // [5, 6] are delayed/lost
+            // 7 is acked in the last report
+            assert_eq!(acked_packets, [3, 7]);
+        }
+    }
+}

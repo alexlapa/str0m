@@ -86,10 +86,5 @@ required-features = ["openssl"]
 
 
 [build-dependencies]
-#anyhow = "1.0"
 cxx-build = "1.0"
-#flate2 = "1.0"
-#reqwest = { version = "0.12", features = ["blocking"] }
-#sha2 = "0.10"
-#tar = "0.4"
 walkdir = "2.5"

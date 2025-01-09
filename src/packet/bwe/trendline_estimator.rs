@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::ops::RangeInclusive;
 use std::time::{Duration, Instant};
 
-use super::{BandwidthUsage, InterGroupDelayDelta2 as InterGroupDelayDelta};
+use super::{BandwidthUsage, InterGroupDelayDelta};
 
 const SMOOTHING_COEF: f64 = 0.9;
 const OVER_USE_THRESHOLD_DEFAULT_MS: f64 = 12.5;
@@ -20,7 +20,7 @@ pub(super) struct TrendlineEstimator {
     window_size: usize,
 
     /// The first instant we saw, used as zero point.
-    zero_time: Option<i64>,
+    zero_time: Option<Instant>,
 
     /// The history of observed delay variations.
     history: VecDeque<Timing>,
@@ -106,7 +106,8 @@ impl TrendlineEstimator {
             .zero_time
             .get_or_insert(variation.last_remote_recv_time);
 
-        let delta_ms = variation.arrival_time_delta * 1000.0 - variation.send_time_delta * 1000.0;
+        let delta_ms = variation.arrival_time_delta.as_secs_f64() * 1000.0
+            - variation.send_delta.as_secs_f64() * 1000.0;
         self.num_delay_variations += 1;
         self.num_delay_variations = self.num_delay_variations.min(*DELAY_COUNT_RANGE.end());
         self.accumulated_delay += delta_ms;
@@ -116,7 +117,7 @@ impl TrendlineEstimator {
         let remote_recv_time = variation.last_remote_recv_time - zero_time;
         let timing = Timing {
             at: now,
-            remote_recv_time_ms: remote_recv_time as f64,
+            remote_recv_time_ms: remote_recv_time.as_secs_f64() * 1000.0,
             smoothed_delay_ms: self.smoothed_delay,
         };
 
@@ -187,7 +188,7 @@ impl TrendlineEstimator {
         if modified_trend > self.delay_threshold {
             let overuse = match &mut self.overuse {
                 Some(o) => {
-                    o.time_overusing += variation.send_time_delta;
+                    o.time_overusing += variation.send_delta;
                     o
                 }
                 None => {
@@ -196,7 +197,7 @@ impl TrendlineEstimator {
                         // Initialize the timer. Assume that we've been
                         // over-using half of the time since the previous
                         // sample.
-                        time_overusing: variation.send_time_delta / 2.0,
+                        time_overusing: variation.send_delta / 2,
                     };
                     self.overuse = Some(new_overuse);
 
@@ -212,7 +213,7 @@ impl TrendlineEstimator {
                 "Trendline Estimator: Maybe overusing"
             );
 
-            if overuse.time_overusing > OVER_USE_TIME_THRESHOLD.as_secs_f64()
+            if overuse.time_overusing > OVER_USE_TIME_THRESHOLD
                 && overuse.count > 1
                 && trend > self.previous_trend
             {
@@ -287,6 +288,120 @@ struct Timing {
 
 struct Overuse {
     count: usize,
-    // secs as f64
-    time_overusing: f64,
+    time_overusing: Duration,
 }
+
+// #[cfg(test)]
+// mod test {
+//     use std::time::{Duration, Instant};
+//
+//     use crate::packet::bwe::BandwidthUsage;
+//
+//     use super::{InterGroupDelayDelta, TrendlineEstimator};
+//
+//     #[test]
+//     fn test_window_size_limit() {
+//         let now = Instant::now();
+//         let remote_recv_time_base = Instant::now();
+//         let mut estimator = TrendlineEstimator::new(20);
+//
+//         estimator.add_delay_observation(
+//             delay_variation(0.0, duration_ms(1), remote_recv_time_base),
+//             now,
+//         );
+//
+//         for _ in 0..25 {
+//             estimator.add_delay_observation(
+//                 delay_variation(
+//                     10.0,
+//                     duration_ms(1),
+//                     remote_recv_time_base + duration_ms(350),
+//                 ),
+//                 now + duration_ms(500),
+//             );
+//         }
+//
+//         assert_eq!(estimator.history.len(), 20);
+//     }
+//
+//     #[test]
+//     fn test_overuse() {
+//         let now = Instant::now();
+//         let remote_recv_time_base = Instant::now();
+//         let mut estimator = TrendlineEstimator::new(20);
+//
+//         for g in 0..5 {
+//             for i in 0..5 {
+//                 estimator.add_delay_observation(
+//                     delay_variation(
+//                         0.0,
+//                         duration_ms(1),
+//                         remote_recv_time_base + Duration::from_micros(5_000 * g + i * 40),
+//                     ),
+//                     now + duration_ms(g * 100),
+//                 );
+//             }
+//         }
+//
+//         assert_eq!(estimator.hypothesis(), BandwidthUsage::Normal);
+//         assert_eq!(estimator.history.len(), 20);
+//
+//         estimator.add_delay_observation(
+//             delay_variation(
+//                 12.0,
+//                 duration_ms(5),
+//                 remote_recv_time_base + Duration::from_micros(25_000),
+//             ),
+//             now + duration_ms(600),
+//         );
+//         assert_eq!(
+//             estimator.hypothesis(),
+//             BandwidthUsage::Normal,
+//             "After getting an initial increasing delay the hypothesis should remain at normal"
+//         );
+//
+//         estimator.add_delay_observation(
+//             delay_variation(
+//                 13.0,
+//                 duration_ms(5),
+//                 remote_recv_time_base + Duration::from_micros(25_140),
+//             ),
+//             now + duration_ms(600),
+//         );
+//         assert_eq!(
+//             estimator.hypothesis(),
+//             BandwidthUsage::Normal,
+//             "After getting an a second increasing delay the hypothesis should remain at normal because we the time overusing threshold hasn't been reached yet"
+//         );
+//
+//         estimator.add_delay_observation(
+//             delay_variation(
+//                 14.0,
+//                 duration_ms(8),
+//                 remote_recv_time_base + Duration::from_micros(25_250),
+//             ),
+//             now + duration_ms(600),
+//         );
+//         assert_eq!(
+//             estimator.hypothesis(),
+//             BandwidthUsage::Overuse,
+//             "After getting a third increasing delay the hypothesis should move to over because we have been overusing for more than 10ms"
+//         );
+//     }
+//
+//     fn duration_ms(ms: u64) -> Duration {
+//         Duration::from_millis(ms)
+//     }
+//
+//     fn delay_variation(
+//         delay: f64,
+//         send_delta: Duration,
+//         last_remote_recv_time: Instant,
+//     ) -> InterGroupDelayDelta {
+//         InterGroupDelayDelta {
+//             send_delta,
+//             delay_delta: delay,
+//             last_remote_recv_time,
+//         }
+//     }
+// }

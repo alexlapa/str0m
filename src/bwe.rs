@@ -2,7 +2,7 @@
 
 use crate::{rtp_::Mid, Rtc};
 
-pub use crate::rtp_::{Bitrate, DataSize};
+pub use crate::rtp_::Bitrate;
 
 #[derive(Debug, PartialEq)]
 /// Bandwidth estimation kind.
@@ -36,21 +36,25 @@ impl<'a> Bwe<'a> {
     /// Staring at the lower layer, call:
     ///
     /// ```
+    /// # #[cfg(feature = "openssl")] {
     /// # use str0m::{Rtc, bwe::Bitrate};
     /// let mut rtc = Rtc::new();
     ///
     /// rtc.bwe().set_current_bitrate(Bitrate::kbps(250));
-    /// ````
+    /// # }
+    /// ```
     ///
     /// When a new estimate is made available that indicates a switch to the medium layer is
     /// possible, make the switch and then update the configuration:
     ///
     /// ```
+    /// # #[cfg(feature = "openssl")] {
     /// # use str0m::{Rtc, bwe::Bitrate};
     /// let mut rtc = Rtc::new();
     ///
     /// rtc.bwe().set_current_bitrate(Bitrate::kbps(750));
-    /// ````
+    /// # }
+    /// ```
     ///
     /// ## Accuracy
     ///

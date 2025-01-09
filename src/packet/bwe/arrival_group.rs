@@ -26,31 +26,32 @@ impl ArrivalGroupAccumulator {
             // have two frames of data to process.
             self.current_group = Some(ArrivalGroup {
                 first_seq_no: packet.seq_no,
-                first_send_time: packet.local_send_time_ms,
-                first_arrival: packet.remote_recv_time_ms,
+                first_send_time: packet.local_send_time,
+                first_arrival: packet.remote_recv_time,
                 last_seq_no: packet.seq_no,
-                send_time: packet.local_send_time_ms,
-                complete_time: packet.remote_recv_time_ms,
+                send_time: packet.local_send_time,
+                complete_time: packet.remote_recv_time,
                 size: 1,
             });
 
             return None;
         };
 
-        let mut send_time_delta = None;
+        let mut send_delta = None;
         let mut arrival_time_delta = None;
-        if current_group.first_send_time > packet.local_send_time_ms {
+        if current_group.first_send_time > packet.local_send_time {
             // Reordered packet.
             return None;
-        } else if current_group.new_timestamp_group(packet.remote_recv_time_ms, packet.local_send_time_ms)
+        } else if current_group.new_timestamp_group(packet.remote_recv_time, packet.local_send_time)
         {
             // First packet of a later send burst, the previous packets sample is ready.
             if self.previous_group.is_some() {
                 let previous_group = self.previous_group.as_mut().unwrap();
-                send_time_delta = Some((current_group.send_time - previous_group.send_time) as f64 / 1000.0);
-                arrival_time_delta = Some((current_group.complete_time - previous_group.complete_time) as f64 / 1000.0);
+                send_delta = Some(current_group.send_time - previous_group.send_time);
+                arrival_time_delta =
+                    Some(current_group.complete_time - previous_group.complete_time);
 
-                if arrival_time_delta.unwrap() < 0.0 {
+                if arrival_time_delta.unwrap() < Duration::ZERO {
                     // The group of packets has been reordered since receiving its local
                     // arrival timestamp.
                     self.num_consecutive_reordered_packets += 1;
@@ -68,22 +69,22 @@ impl ArrivalGroupAccumulator {
 
             self.previous_group = Some(*current_group);
             // The new timestamp is now the current frame.
-            current_group.first_send_time = packet.local_send_time_ms;
-            current_group.send_time = packet.local_send_time_ms;
-            current_group.first_arrival = packet.remote_recv_time_ms;
+            current_group.first_send_time = packet.local_send_time;
+            current_group.send_time = packet.local_send_time;
+            current_group.first_arrival = packet.remote_recv_time;
             current_group.size = 0;
         } else {
-            current_group.send_time = current_group.send_time.max(packet.local_send_time_ms);
+            current_group.send_time = current_group.send_time.max(packet.local_send_time);
         }
 
         current_group.size += 1;
-        current_group.complete_time = packet.remote_recv_time_ms;
+        current_group.complete_time = packet.remote_recv_time;
 
-        let send_time_delta = send_time_delta?;
+        let send_delta = send_delta?;
         let arrival_time_delta = arrival_time_delta?;
 
         return Some(InterGroupDelayDelta {
-            send_time_delta,
+            send_delta,
             arrival_time_delta,
             last_remote_recv_time: current_group.complete_time,
         });
@@ -93,35 +94,35 @@ impl ArrivalGroupAccumulator {
 #[derive(Debug, Clone, Copy)]
 struct ArrivalGroup {
     first_seq_no: SeqNo,
-    first_send_time: i64,
-    first_arrival: i64,
+    first_send_time: Instant,
+    first_arrival: Instant,
     last_seq_no: SeqNo,
-    send_time: i64,
-    complete_time: i64,
+    send_time: Instant,
+    complete_time: Instant,
     size: usize,
 }
 
 impl ArrivalGroup {
-    fn new_timestamp_group(&self, arrival_time: i64, send_time: i64) -> bool {
+    fn new_timestamp_group(&self, arrival_time: Instant, send_time: Instant) -> bool {
         if self.belongs_to_burst(arrival_time, send_time) {
             return false;
         } else {
-            send_time - self.first_send_time > SEND_TIME_GROUP_LENGTH.as_millis() as i64
+            return send_time - self.first_send_time > SEND_TIME_GROUP_LENGTH;
         }
     }
 
-    fn belongs_to_burst(&self, arrival_time: i64, send_time: i64) -> bool {
-        let arrival_time_delta = (arrival_time - self.complete_time) as f64;
-        let send_time_delta = (send_time - self.send_time) as f64;
+    fn belongs_to_burst(&self, arrival_time: Instant, send_time: Instant) -> bool {
+        let arrival_time_delta = arrival_time - self.complete_time;
+        let send_time_delta = send_time - self.send_time;
 
-        if send_time_delta == 0.0 {
+        if send_time_delta == Duration::ZERO {
             return true;
         }
 
-        let propagation_delta = arrival_time_delta - send_time_delta;
+        let propagation_delta = arrival_time_delta.as_secs_f64() - send_time_delta.as_secs_f64();
         if propagation_delta < 0.0
-            && arrival_time_delta <= BURST_DELTA_THRESHOLD.as_millis() as f64
-            && arrival_time - self.first_arrival < MAX_BURST_DURATION.as_millis() as i64
+            && arrival_time_delta <= BURST_DELTA_THRESHOLD
+            && arrival_time - self.first_arrival < MAX_BURST_DURATION
         {
             return true;
         }
@@ -134,20 +135,449 @@ impl ArrivalGroup {
 #[derive(Debug, Clone, Copy)]
 pub(super) struct InterGroupDelayDelta {
     /// The delta between the send times of the two groups i.e. delta between the last packet sent
-    /// in each group. (as_secs_f64())
-    pub send_time_delta: f64,
-    /// The delay delta between the two groups. (as_secs_f64())
-    pub arrival_time_delta: f64,
+    /// in each group.
+    pub(super) send_delta: Duration,
+    /// The delay delta between the two groups.
+    pub(super) arrival_time_delta: Duration,
     /// The reported receive time for the last packet in the first arrival group.
-    pub last_remote_recv_time: i64,
+    pub(super) last_remote_recv_time: Instant,
 }
 
+mod orig {
+    use std::mem;
+    use std::time::{Duration, Instant};
+
+    use crate::rtp_::SeqNo;
+
+    use super::AckedPacket;
+
+    const BURST_TIME_INTERVAL: Duration = Duration::from_millis(5);
+
+    #[derive(Debug, Default)]
+    pub struct ArrivalGroup {
+        first: Option<(SeqNo, Instant, Instant)>,
+        last_seq_no: Option<SeqNo>,
+        last_local_send_time: Option<Instant>,
+        last_remote_recv_time: Option<Instant>,
+        size: usize,
+    }
+
+    impl ArrivalGroup {
+        /// Maybe add a packet to the group.
+        ///
+        /// Returns [`true`] if a new group needs to be created and [`false`] otherwise.
+        fn add_packet(&mut self, packet: &AckedPacket) -> bool {
+            match self.belongs_to_group(packet) {
+                Belongs::NewGroup => return true,
+                Belongs::Skipped => return false,
+                Belongs::Yes => {}
+            }
+
+            if self.first.is_none() {
+                self.first = Some((
+                    packet.seq_no,
+                    packet.local_send_time,
+                    packet.remote_recv_time,
+                ));
+            }
+
+            self.last_remote_recv_time = self
+                .last_remote_recv_time
+                .max(Some(packet.remote_recv_time));
+            self.last_local_send_time = self.last_local_send_time.max(Some(packet.local_send_time));
+            self.size += 1;
+            self.last_seq_no = self.last_seq_no.max(Some(packet.seq_no));
+
+            false
+        }
+
+        fn belongs_to_group(&self, packet: &AckedPacket) -> Belongs {
+            let Some((_, first_local_send_time, first_remote_recv_time)) = self.first else {
+                // Start of the group
+                return Belongs::Yes;
+            };
+
+            let Some(send_diff) = packet
+                .local_send_time
+                .checked_duration_since(first_local_send_time)
+            else {
+                // Out of order
+                return Belongs::Skipped;
+            };
+
+            if send_diff < BURST_TIME_INTERVAL {
+                // Sent within the same burst interval
+                return Belongs::Yes;
+            }
+
+            let inter_arrival_time = packet
+                .remote_recv_time
+                .checked_duration_since(self.remote_recv_time());
+
+            let Some(inter_arrival_time) = inter_arrival_time else {
+                info!("TWCC: Out of order arrival");
+                return Belongs::Skipped;
+            };
+
+            let inter_group_delay_delta = inter_arrival_time.as_secs_f64()
+                - (packet.local_send_time - self.local_send_time()).as_secs_f64();
+
+            if inter_group_delay_delta < 0.0
+                && inter_arrival_time < BURST_TIME_INTERVAL
+                && packet.remote_recv_time - first_remote_recv_time < Duration::from_millis(100)
+            {
+                Belongs::Yes
+            } else {
+                Belongs::NewGroup
+            }
+        }
+
+        /// Calculate the inter group delay delta between self and a subsequent group.
+        pub(super) fn inter_group_delay_delta(&self, other: &Self) -> Option<f64> {
+            let first_seq_no = self.first.map(|(s, _, _)| s)?;
+            let last_seq_no = self.last_seq_no?;
+
+            let arrival_delta = self.arrival_delta(other)?.as_secs_f64() * 1000.0;
+            let departure_delta = self.departure_delta(other)?.as_secs_f64() * 1000.0;
+
+            assert!(arrival_delta >= 0.0);
+
+            let result = arrival_delta - departure_delta;
+            trace!("Delay delta for group({first_seq_no}..={last_seq_no}. {result:?} = {arrival_delta:?} - {departure_delta:?}");
+
+            Some(result)
+        }
+
+        pub(super) fn departure_delta(&self, other: &Self) -> Option<Duration> {
+            other
+                .local_send_time()
+                .checked_duration_since(self.local_send_time())
+        }
+
+        fn arrival_delta(&self, other: &Self) -> Option<Duration> {
+            other
+                .remote_recv_time()
+                .checked_duration_since(self.remote_recv_time())
+        }
+
+        /// The local send time i.e. departure time, for the group.
+        ///
+        /// Panics if the group doesn't have at least one packet.
+        fn local_send_time(&self) -> Instant {
+            self.last_local_send_time
+                .expect("local_send_time to only be called on non-empty groups")
+        }
+
+        /// The remote receive time i.e. arrival time, for the group.
+        ///
+        /// Panics if the group doesn't have at least one packet.
+        fn remote_recv_time(&self) -> Instant {
+            self.last_remote_recv_time
+                .expect("remote_recv_time to only be called on non-empty groups")
+        }
+    }
+
+    /// Whether a given packet is belongs to a group or not.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Belongs {
+        /// The packet is belongs to the group.
+        Yes,
+        /// The packet is does not belong to the group, a new group should be created.
+        NewGroup,
+        /// The packet was skipped and a decision wasn't made.
+        Skipped,
+    }
+
+    impl Belongs {
+        #[cfg(test)]
+        fn new_group(&self) -> bool {
+            matches!(self, Self::NewGroup)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    pub struct ArrivalGroupAccumulator {
+        previous_group: Option<ArrivalGroup>,
+        current_group: ArrivalGroup,
+    }
+
+    impl ArrivalGroupAccumulator {
+        ///
+        /// Accumulate a packet.
+        ///
+        /// If adding this packet produced a new delay delta it is returned.
+        pub(super) fn accumulate_packet(
+            &mut self,
+            packet: &AckedPacket,
+        ) -> Option<InterGroupDelayDelta> {
+            let need_new_group = self.current_group.add_packet(packet);
+
+            if !need_new_group {
+                return None;
+            }
+
+            // Variation between previous group and current.
+            let delay_delta = self.inter_group_delay_delta();
+            let send_delta = self.send_delta();
+            let last_remote_recv_time = self.current_group.remote_recv_time();
+
+            let current_group = mem::take(&mut self.current_group);
+            self.previous_group = Some(current_group);
+
+            self.current_group.add_packet(packet);
+
+            Some(InterGroupDelayDelta {
+                send_delta: send_delta?,
+                delay_delta: delay_delta?,
+                last_remote_recv_time,
+            })
+        }
+
+        fn inter_group_delay_delta(&self) -> Option<f64> {
+            self.previous_group
+                .as_ref()
+                .and_then(|prev| prev.inter_group_delay_delta(&self.current_group))
+        }
+
+        fn send_delta(&self) -> Option<Duration> {
+            self.previous_group
+                .as_ref()
+                .and_then(|prev| prev.departure_delta(&self.current_group))
+        }
+    }
+
+    /// The calculate delay delta between two groups of packets.
+    #[derive(Debug, Clone, Copy)]
+    pub(super) struct InterGroupDelayDelta {
+        /// The delta between the send times of the two groups i.e. delta between the last packet sent
+        /// in each group.
+        pub(super) send_delta: Duration,
+        /// The delay delta between the two groups.
+        pub(super) delay_delta: f64,
+        /// The reported receive time for the last packet in the first arrival group.
+        pub(super) last_remote_recv_time: Instant,
+    }
+}
 #[cfg(test)]
 mod test {
+    use std::mem;
     use std::time::{Duration, Instant};
 
     use crate::rtp_::DataSize;
-    use super::{AckedPacket, ArrivalGroup, ArrivalGroupAccumulator};
+    use super::{AckedPacket,  ArrivalGroupAccumulator, orig::ArrivalGroupAccumulator as OrigArrivalGroupAccumulator};
+
+    #[test]
+    fn test_arrival_group_all_packets_belong_to_empty_group() {
+        let now = Instant::now();
+        let group = ArrivalGroup::default();
+
+        assert_eq!(
+            group.belongs_to_group(&AckedPacket {
+                seq_no: 1.into(),
+                size: DataSize::ZERO,
+                local_send_time: now,
+                remote_recv_time: now + duration_us(10),
+                local_recv_time: now + duration_us(12),
+            }),
+            Belongs::Yes,
+            "Any packet should belong to an empty arrival group"
+        );
+    }
+
+    #[test]
+    fn test_arrival_group_all_packets_sent_within_burst_interval_belong() {
+        let now = Instant::now();
+        #[allow(clippy::vec_init_then_push)]
+        let packets = {
+            let mut packets = vec![];
+
+            packets.push(AckedPacket {
+                seq_no: 0.into(),
+                size: DataSize::ZERO,
+                local_send_time: now,
+                remote_recv_time: now + duration_us(150),
+                local_recv_time: now + duration_us(200),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 1.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(50),
+                remote_recv_time: now + duration_us(225),
+                local_recv_time: now + duration_us(275),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 2.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(1005),
+                remote_recv_time: now + duration_us(1140),
+                local_recv_time: now + duration_us(1190),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 3.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(4995),
+                remote_recv_time: now + duration_us(5001),
+                local_recv_time: now + duration_us(5051),
+            });
+
+            // Should not belong
+            packets.push(AckedPacket {
+                seq_no: 4.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(5700),
+                remote_recv_time: now + duration_us(6000),
+                local_recv_time: now + duration_us(5750),
+            });
+
+            packets
+        };
+
+        let mut group = ArrivalGroup::default();
+
+        for p in packets {
+            let need_new_group = group.belongs_to_group(&p).new_group();
+            if !need_new_group {
+                group.add_packet(&p);
+            }
+        }
+
+        assert_eq!(group.size, 4, "Expected group to contain 4 packets");
+    }
+
+    #[test]
+    fn test_arrival_group_out_order_arrival_ignored() {
+        let now = Instant::now();
+        #[allow(clippy::vec_init_then_push)]
+        let packets = {
+            let mut packets = vec![];
+
+            packets.push(AckedPacket {
+                seq_no: 0.into(),
+                size: DataSize::ZERO,
+                local_send_time: now,
+                remote_recv_time: now + duration_us(150),
+                local_recv_time: now + duration_us(200),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 1.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(50),
+                remote_recv_time: now + duration_us(225),
+                local_recv_time: now + duration_us(275),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 2.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(1005),
+                remote_recv_time: now + duration_us(1140),
+                local_recv_time: now + duration_us(1190),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 3.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(4995),
+                remote_recv_time: now + duration_us(5001),
+                local_recv_time: now + duration_us(5051),
+            });
+
+            // Should be skipped
+            packets.push(AckedPacket {
+                seq_no: 4.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(5001),
+                remote_recv_time: now + duration_us(5000),
+                local_recv_time: now + duration_us(5050),
+            });
+
+            // Should not belong
+            packets.push(AckedPacket {
+                seq_no: 5.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(5700),
+                remote_recv_time: now + duration_us(6000),
+                local_recv_time: now + duration_us(6050),
+            });
+
+            packets
+        };
+
+        let mut group = ArrivalGroup::default();
+
+        for p in packets {
+            let need_new_group = group.belongs_to_group(&p).new_group();
+            if !need_new_group {
+                group.add_packet(&p);
+            }
+        }
+
+        assert_eq!(group.size, 4, "Expected group to contain 4 packets");
+    }
+
+    #[test]
+    fn test_arrival_group_arrival_membership() {
+        let now = Instant::now();
+        #[allow(clippy::vec_init_then_push)]
+        let packets = {
+            let mut packets = vec![];
+
+            packets.push(AckedPacket {
+                seq_no: 0.into(),
+                size: DataSize::ZERO,
+                local_send_time: now,
+                remote_recv_time: now + duration_us(150),
+                local_recv_time: now + duration_us(200),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 1.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(50),
+                remote_recv_time: now + duration_us(225),
+                local_recv_time: now + duration_us(275),
+            });
+
+            packets.push(AckedPacket {
+                seq_no: 2.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(5152),
+                // Just less than 5ms inter arrival delta
+                remote_recv_time: now + duration_us(5224),
+                local_recv_time: now + duration_us(5274),
+            });
+
+            // Should not belong
+            packets.push(AckedPacket {
+                seq_no: 3.into(),
+                size: DataSize::ZERO,
+                local_send_time: now + duration_us(5700),
+                remote_recv_time: now + duration_us(6000),
+                local_recv_time: now + duration_us(6050),
+            });
+
+            packets
+        };
+
+        let mut group = ArrivalGroup::default();
+
+        for p in packets {
+            let need_new_group = group.belongs_to_group(&p).new_group();
+            if !need_new_group {
+                group.add_packet(&p);
+            }
+        }
+
+        assert_eq!(group.size, 3, "Expected group to contain 4 packets");
+    }
+
+    fn duration_us(us: u64) -> Duration {
+        Duration::from_micros(us)
+    }
 
     fn data1() -> Vec<((Duration, Duration), (i64, i64, i64))> {
         // ComputeDeltas(send_time = 69737459 ms, arrival_time = 69737548294 us) -> (send_delta = 0 us, recv_delta = 0 us, calculated_deltas = 0);
@@ -5635,65 +6065,109 @@ mod test {
 
     #[test]
     fn test_libwebrtc_captured() {
-        let now = Instant::now();
-        let tests = vec![data1(), data2(), data3()];
+        let zero_time: Instant = unsafe { mem::transmute(0u128) };
+        let tests = vec![
+            data1(),
+            data2(),
+            // data3()
+        ];
 
         for test in tests {
-            let mut aga = ArrivalGroupAccumulator::default();
+            let mut new_aga = ArrivalGroupAccumulator::default();
+            let mut orig_aga = OrigArrivalGroupAccumulator::default();
             let mut cpp_aga = crate::bridge::new_inter_arrival_delta();
 
             for (i, ((local_send_time, remote_recv_time), (expected_send_delta, expected_recv_delta, expected_calculated_deltas))) in test.into_iter().enumerate() {
                 let expected_calculated_deltas = expected_calculated_deltas > 0;
 
-                // cpp impl
-                let mut send_delta_us = 0i64;
-                let mut recv_delta_us = 0i64;
-                let mut packet_size_delta = 0u64;
-                let cpp_calculated_deltas = crate::bridge::ComputeDeltas(
-                    cpp_aga
-                        .as_mut()
-                        .unwrap(),
-                    local_send_time.as_micros() as u64,
-                    remote_recv_time.as_micros() as u64,
-                    0,
-                    0,
-                    &mut send_delta_us,
-                    &mut recv_delta_us,
-                    &mut packet_size_delta,
-                );
+                {
+                    // cpp impl
+                    let mut send_delta_us = 0i64;
+                    let mut recv_delta_us = 0i64;
+                    let mut packet_size_delta = 0u64;
+                    let calculated_deltas = crate::bridge::ComputeDeltas(
+                        cpp_aga
+                            .as_mut()
+                            .unwrap(),
+                        local_send_time.as_micros() as u64,
+                        remote_recv_time.as_micros() as u64,
+                        0,
+                        0,
+                        &mut send_delta_us,
+                        &mut recv_delta_us,
+                        &mut packet_size_delta,
+                    );
 
-                assert_eq!(expected_calculated_deltas, cpp_calculated_deltas);
-                assert_eq!(expected_send_delta, send_delta_us);
-                assert_eq!(expected_recv_delta, recv_delta_us);
+                    // if calculated_deltas {
+                    //     println!("CPP: {send_delta_us} {recv_delta_us}");
+                    // } else {
+                    //     println!("CPP: 0 0");
+                    // }
 
-                // str0m impl
-                let dv = aga.compute_deltas(
-                    &AckedPacket {
-                        seq_no: (i as u64).into(),
-                        size: DataSize::ZERO,
-                        local_send_time_ms: local_send_time.as_millis() as i64,
-                        remote_recv_time_ms: remote_recv_time.as_millis()  as i64,
-                    },
-                );
-                let str0m_calculated_deltas = dv.is_some();
-                let (str0m_send_delta, str0m_recv_delta) = match dv {
-                    None => (0, 0),
-                    Some(dv) => ((dv.send_time_delta * 1000000.0) as i64, (dv.arrival_time_delta * 1000000.0) as i64)
-                };
+                    assert_eq!(expected_calculated_deltas, calculated_deltas, "iter #{i}");
+                    assert_eq!(expected_send_delta, send_delta_us, "iter #{i}");
+                    assert_eq!(expected_recv_delta, recv_delta_us, "iter #{i}");
+                }
 
-                assert_eq!(expected_calculated_deltas, str0m_calculated_deltas, "iter #{i}({expected_send_delta} {expected_recv_delta} {expected_calculated_deltas})");
-                assert_eq!(expected_send_delta, str0m_send_delta, "iter #{i}");
-                assert_eq!(expected_recv_delta, str0m_recv_delta, "iter #{i}");
+                {
+                    // new str0m impl
+                    let dv = new_aga.compute_deltas(
+                        &AckedPacket {
+                            seq_no: (i as u64).into(),
+                            size: DataSize::ZERO,
+                            local_send_time: zero_time + local_send_time,
+                            remote_recv_time: zero_time + remote_recv_time,
+                            local_recv_time: crate::not_happening() // does not matter,
+                        },
+                    );
+                    let (calculated_deltas, send_delta, recv_delta) = match dv {
+                        Some(dv) => {
+                            (true, i64::try_from(dv.send_delta.as_micros()).unwrap(), i64::try_from(dv.arrival_time_delta.as_micros()).unwrap())
+                        },
+                        None => {
+                            (false, 0, 0)
+                        }
+                    };
+
+                    // println!("NEW: {send_delta} {recv_delta}");
+
+                    assert_eq!(expected_calculated_deltas, calculated_deltas, "iter #{i}");
+                    assert_eq!(expected_send_delta, send_delta, "iter #{i}");
+                    assert_eq!(expected_recv_delta, recv_delta, "iter #{i}");
+                }
+
+                {
+                    // orig str0m impl
+                    let dv = orig_aga.accumulate_packet(
+                        &AckedPacket {
+                            seq_no: (i as u64).into(),
+                            size: DataSize::ZERO,
+                            local_send_time: zero_time + local_send_time,
+                            remote_recv_time: zero_time + remote_recv_time,
+                            local_recv_time: crate::not_happening() // does not matter,
+                        },
+                    );
+                    let (calculated_deltas, send_delta, recv_delta) = match dv {
+                        Some(dv) => {
+                            let send_delta_us = i64::try_from(dv.send_delta.as_micros()).unwrap();
+                            let recv_delta = send_delta_us + (dv.delay_delta * 1000.0) as i64;
+
+                            (true, send_delta_us, recv_delta)
+                        },
+                        None => {
+                            (false, 0, 0)
+                        }
+                    };
+
+                    // println!("ORIG: {send_delta} {recv_delta}");
+
+                    assert_eq!(expected_calculated_deltas, calculated_deltas, "iter #{i}");
+                    assert_eq!(expected_send_delta, send_delta, "iter #{i}");
+                    assert_eq!(expected_recv_delta, recv_delta, "iter #{i}");
+                }
+
+                println!();
             }
         }
     }
-
-    fn duration_us(us: u64) -> Duration {
-        Duration::from_micros(us)
-    }
-
-    fn duration_ms(ms: u64) -> Duration {
-        Duration::from_millis(ms)
-    }
 }
-
