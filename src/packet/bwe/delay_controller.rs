@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use crate::rtp_::Bitrate;
@@ -57,6 +58,7 @@ impl DelayController {
         acked: &[AckedPacket],
         acked_bitrate: Option<Bitrate>,
         now: Instant,
+        from: SocketAddr
     ) -> Option<Bitrate> {
         let mut max_rtt = None;
 
@@ -82,6 +84,11 @@ impl DelayController {
 
         self.update_estimate(new_hypothesis, acked_bitrate, self.mean_max_rtt, now);
         self.last_twcc_report = now;
+
+        error!(
+            "From [{from}], acked = {acked_bitrate:?}, hyp = {new_hypothesis}, est = {}",
+            self.last_estimate.unwrap_or(Bitrate::ZERO),
+        );
 
         self.last_estimate
     }

@@ -205,10 +205,17 @@ impl ArrivalGroupAccumulator {
             .and_then(|prev| prev.inter_group_delay_delta(&self.current_group))
     }
 
-    fn send_delta(&self) -> Option<Duration> {
-        self.previous_group
-            .as_ref()
-            .and_then(|prev| prev.departure_delta(&self.current_group))
+    fn send_delta(&self) -> Option<f64> {
+        let current_send_time = self.current_group.local_send_time();
+        let prev_send_time = self.previous_group.as_ref()?.local_send_time();
+
+        let send_delta = if current_send_time > prev_send_time {
+            (current_send_time - prev_send_time).as_secs_f64()
+        } else {
+            (prev_send_time - current_send_time).as_secs_f64() * -1.0
+        };
+
+        Some(send_delta)
     }
 }
 
@@ -217,7 +224,7 @@ impl ArrivalGroupAccumulator {
 pub(super) struct InterGroupDelayDelta {
     /// The delta between the send times of the two groups i.e. delta between the last packet sent
     /// in each group.
-    pub(super) send_delta: Duration,
+    pub(super) send_delta: f64,
     /// The delay delta between the two groups.
     pub(super) delay_delta: f64,
     /// The reported receive time for the last packet in the first arrival group.

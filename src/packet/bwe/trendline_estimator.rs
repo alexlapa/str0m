@@ -195,7 +195,7 @@ impl TrendlineEstimator {
                         // Initialize the timer. Assume that we've been
                         // over-using half of the time since the previous
                         // sample.
-                        time_overusing: variation.send_delta / 2,
+                        time_overusing: variation.send_delta / 2.0,
                     };
                     self.overuse = Some(new_overuse);
 
@@ -211,7 +211,7 @@ impl TrendlineEstimator {
                 "Trendline Estimator: Maybe overusing"
             );
 
-            if overuse.time_overusing > OVER_USE_TIME_THRESHOLD
+            if overuse.time_overusing > OVER_USE_TIME_THRESHOLD.as_secs_f64()
                 && overuse.count > 1
                 && trend > self.previous_trend
             {
@@ -286,7 +286,7 @@ struct Timing {
 
 struct Overuse {
     count: usize,
-    time_overusing: Duration,
+    time_overusing: f64,
 }
 
 #[cfg(test)]
