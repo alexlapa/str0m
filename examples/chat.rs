@@ -3,11 +3,12 @@ extern crate tracing;
 
 use std::collections::VecDeque;
 use std::io::ErrorKind;
-use std::net::{SocketAddr, UdpSocket};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -19,9 +20,25 @@ use str0m::crypto::from_feature_flags;
 use str0m::media::{Direction, KeyframeRequest, MediaData, Mid, Rid};
 use str0m::media::{KeyframeRequestKind, MediaKind};
 use str0m::net::Protocol;
+use str0m::net::TcpType;
 use str0m::{net::Receive, Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcError};
 
 mod util;
+
+#[derive(Debug)]
+struct TcpIngress {
+    source: SocketAddr,
+    destination: SocketAddr,
+    data: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct TcpEgress {
+    destination: SocketAddr,
+    data: Vec<u8>,
+}
+
+type TcpEgressTx = mpsc::Sender<TcpEgress>;
 
 fn init_log() {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -51,29 +68,40 @@ pub fn main() {
 
     // Spin up a UDP socket for the RTC. All WebRTC traffic is going to be multiplexed over this single
     // server socket. Clients are identified via their respective remote (UDP) socket address.
-    let socket = UdpSocket::bind(format!("{host_addr}:0")).expect("binding a random UDP port");
-    let addr = socket.local_addr().expect("a local socket address");
-    info!("Bound UDP port: {}", addr);
+    let socket = UdpSocket::bind(format!("{host_addr}:19305")).expect("binding a random UDP port");
+    let udp_addr = socket.local_addr().expect("a local socket address");
+    info!("Bound UDP port: {}", udp_addr);
+
+    let tcp_listener = TcpListener::bind(format!("{host_addr}:19305")).expect("binding a random TCP port");
+    let tcp_addr = tcp_listener
+        .local_addr()
+        .expect("a local TCP listener address");
+    info!("Bound TCP port: {}", tcp_addr);
+
+    let (tcp_ingress_tx, tcp_ingress_rx) = mpsc::channel::<TcpIngress>();
+    let (tcp_egress_tx, tcp_egress_rx) = mpsc::channel::<TcpEgress>();
+
+    start_tcp_listener_thread(tcp_listener, tcp_ingress_tx, tcp_egress_rx);
 
     // The run loop is on a separate thread to the web server.
-    thread::spawn(move || run(socket, rx));
+    thread::spawn(move || run(socket, tcp_ingress_rx, tcp_egress_tx, rx));
 
     let server = Server::new_ssl(
         "0.0.0.0:3000",
-        move |request| web_request(request, addr, tx.clone()),
+        move |request| web_request(request, udp_addr, tcp_addr, tx.clone()),
         certificate,
         private_key,
     )
     .expect("starting the web server");
 
     let port = server.server_addr().port();
-    info!("Connect a browser to https://{:?}:{:?}", addr.ip(), port);
+    info!("Connect a browser to https://{:?}:{:?}", udp_addr.ip(), port);
 
     server.run();
 }
 
 // Handle a web request.
-fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Response {
+fn web_request(request: &Request, udp_addr: SocketAddr, tcp_addr: SocketAddr, tx: SyncSender<Rtc>) -> Response {
     if request.method() == "GET" {
         return Response::html(include_str!("chat.html"));
     }
@@ -85,11 +113,20 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
     let mut rtc = Rtc::builder()
         // Uncomment this to see statistics
         // .set_stats_interval(Some(Duration::from_secs(1)))
-        // .set_ice_lite(true)
+        .set_ice_lite(true)
         .build(Instant::now());
 
     // Add the shared UDP socket as a host candidate
-    let candidate = Candidate::host(addr, "udp").expect("a host candidate");
+    let candidate = Candidate::host(udp_addr, Protocol::Udp).expect("a UDP host candidate");
+    rtc.add_local_candidate(candidate).unwrap();
+
+    // Add the TCP listener socket as a host candidate (passive = we listen/accept).
+    let candidate = Candidate::builder()
+        .tcp()
+        .host(tcp_addr)
+        .tcptype(TcpType::Passive)
+        .build()
+        .expect("a TCP host candidate");
     rtc.add_local_candidate(candidate).unwrap();
 
     // Create an SDP Answer.
@@ -108,7 +145,12 @@ fn web_request(request: &Request, addr: SocketAddr, tx: SyncSender<Rtc>) -> Resp
 
 /// This is the "main run loop" that handles all clients, reads and writes UdpSocket traffic,
 /// and forwards media data between clients.
-fn run(socket: UdpSocket, rx: Receiver<Rtc>) -> Result<(), RtcError> {
+fn run(
+    socket: UdpSocket,
+    tcp_ingress_rx: Receiver<TcpIngress>,
+    tcp_egress_tx: TcpEgressTx,
+    rx: Receiver<Rtc>,
+) -> Result<(), RtcError> {
     let mut clients: Vec<Client> = vec![];
     let mut to_propagate: VecDeque<Propagated> = VecDeque::new();
     let mut buf = vec![0; 2000];
@@ -131,7 +173,7 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) -> Result<(), RtcError> {
         // Poll clients until they return timeout
         let mut timeout = Instant::now() + Duration::from_millis(100);
         for client in clients.iter_mut() {
-            let t = poll_until_timeout(client, &mut to_propagate, &socket);
+            let t = poll_until_timeout(client, &mut to_propagate, &socket, &tcp_egress_tx);
             timeout = timeout.min(t);
         }
 
@@ -141,6 +183,9 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) -> Result<(), RtcError> {
             continue;
         }
 
+        // Drain any incoming TCP frames and route them to the right client.
+        drain_tcp_ingress(&tcp_ingress_rx, &mut clients);
+
         // The read timeout is not allowed to be 0. In case it is 0, we set 1 millisecond.
         let duration = (timeout - Instant::now()).max(Duration::from_millis(1));
 
@@ -148,7 +193,7 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) -> Result<(), RtcError> {
             .set_read_timeout(Some(duration))
             .expect("setting socket read timeout");
 
-        if let Some(input) = read_socket_input(&socket, &mut buf) {
+        if let Some(input) = read_udp_socket_input(&socket, &mut buf) {
             // The rtc.accepts() call is how we demultiplex the incoming packet to know which
             // Rtc instance the traffic belongs to.
             if let Some(client) = clients.iter_mut().find(|c| c.accepts(&input)) {
@@ -161,10 +206,40 @@ fn run(socket: UdpSocket, rx: Receiver<Rtc>) -> Result<(), RtcError> {
             }
         }
 
+        // Drain again after a UDP receive (helps keep TCP latency down a bit).
+        drain_tcp_ingress(&tcp_ingress_rx, &mut clients);
+
         // Drive time forward in all clients.
         let now = Instant::now();
         for client in &mut clients {
             client.handle_input(Input::Timeout(now));
+        }
+    }
+}
+
+fn drain_tcp_ingress(tcp_ingress_rx: &Receiver<TcpIngress>, clients: &mut [Client]) {
+    loop {
+        let ingress = match tcp_ingress_rx.try_recv() {
+            Ok(v) => v,
+            Err(TryRecvError::Empty) => return,
+            Err(TryRecvError::Disconnected) => panic!("TCP ingress channel disconnected"),
+        };
+
+        let TcpIngress {
+            source,
+            destination,
+            data,
+        } = ingress;
+
+        let Ok(receive) = Receive::new(Protocol::Tcp, source, destination, &data) else {
+            continue;
+        };
+
+        let input = Input::Receive(Instant::now(), receive);
+        if let Some(client) = clients.iter_mut().find(|c| c.accepts(&input)) {
+            client.handle_input(input);
+        } else {
+            debug!("No client accepts TCP input: source={:?} destination={:?}", source, destination);
         }
     }
 }
@@ -185,6 +260,7 @@ fn poll_until_timeout(
     client: &mut Client,
     queue: &mut VecDeque<Propagated>,
     socket: &UdpSocket,
+    tcp_egress_tx: &TcpEgressTx,
 ) -> Instant {
     loop {
         if !client.rtc.is_alive() {
@@ -192,7 +268,7 @@ fn poll_until_timeout(
             return Instant::now();
         }
 
-        let propagated = client.poll_output(socket);
+        let propagated = client.poll_output(socket, tcp_egress_tx);
 
         if let Propagated::Timeout(t) = propagated {
             return t;
@@ -231,28 +307,18 @@ fn propagate(propagated: &Propagated, clients: &mut [Client]) {
     }
 }
 
-fn read_socket_input<'a>(socket: &UdpSocket, buf: &'a mut Vec<u8>) -> Option<Input<'a>> {
+fn read_udp_socket_input<'a>(socket: &UdpSocket, buf: &'a mut Vec<u8>) -> Option<Input<'a>> {
     buf.resize(2000, 0);
 
     match socket.recv_from(buf) {
         Ok((n, source)) => {
             buf.truncate(n);
 
-            // Parse data to a DatagramRecv, which help preparse network data to
-            // figure out the multiplexing of all protocols on one UDP port.
-            let Ok(contents) = buf.as_slice().try_into() else {
+            let destination = socket.local_addr().unwrap();
+            let Ok(receive) = Receive::new(Protocol::Udp, source, destination, buf.as_slice()) else {
                 return None;
             };
-
-            Some(Input::Receive(
-                Instant::now(),
-                Receive {
-                    proto: Protocol::Udp,
-                    source,
-                    destination: socket.local_addr().unwrap(),
-                    contents,
-                },
-            ))
+            Some(Input::Receive(Instant::now(), receive))
         }
 
         Err(e) => match e.kind() {
@@ -350,7 +416,7 @@ impl Client {
         }
     }
 
-    fn poll_output(&mut self, socket: &UdpSocket) -> Propagated {
+    fn poll_output(&mut self, socket: &UdpSocket, tcp_egress_tx: &TcpEgressTx) -> Propagated {
         if !self.rtc.is_alive() {
             return Propagated::Noop;
         }
@@ -362,7 +428,7 @@ impl Client {
         }
 
         match self.rtc.poll_output() {
-            Ok(output) => self.handle_output(output, socket),
+            Ok(output) => self.handle_output(output, socket, tcp_egress_tx),
             Err(e) => {
                 warn!("Client ({}) poll_output failed: {:?}", *self.id, e);
                 self.rtc.disconnect();
@@ -371,12 +437,30 @@ impl Client {
         }
     }
 
-    fn handle_output(&mut self, output: Output, socket: &UdpSocket) -> Propagated {
+    fn handle_output(
+        &mut self,
+        output: Output,
+        socket: &UdpSocket,
+        tcp_egress_tx: &TcpEgressTx,
+    ) -> Propagated {
         match output {
             Output::Transmit(transmit) => {
-                socket
-                    .send_to(&transmit.contents, transmit.destination)
-                    .expect("sending UDP data");
+                match transmit.proto {
+                    Protocol::Udp => {
+                        socket
+                            .send_to(&transmit.contents, transmit.destination)
+                            .expect("sending UDP data");
+                    }
+                    Protocol::Tcp => {
+                        let _ = tcp_egress_tx.send(TcpEgress {
+                            destination: transmit.destination,
+                            data: transmit.contents.to_vec(),
+                        });
+                    }
+                    other => {
+                        debug!("Ignoring transmit for unsupported proto: {:?}", other);
+                    }
+                }
                 Propagated::Noop
             }
             Output::Timeout(t) => Propagated::Timeout(t),
@@ -650,6 +734,161 @@ impl Client {
             info!("request_keyframe failed: {:?}", e);
         }
     }
+}
+
+fn start_tcp_listener_thread(
+    listener: TcpListener,
+    tcp_ingress_tx: mpsc::Sender<TcpIngress>,
+    tcp_egress_rx: mpsc::Receiver<TcpEgress>,
+) {
+    thread::spawn(move || {
+        use std::collections::HashMap;
+
+        // Connection writers keyed by peer addr (remote endpoint).
+        let connections: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        // Dispatcher: routes egress packets from the main loop to the per-connection writer.
+        {
+            let connections = connections.clone();
+            thread::spawn(move || {
+                while let Ok(msg) = tcp_egress_rx.recv() {
+                    let tx = connections
+                        .lock()
+                        .expect("connections lock")
+                        .get(&msg.destination)
+                        .cloned();
+                    if let Some(tx) = tx {
+                        let _ = tx.send(msg.data);
+                    } else {
+                        debug!("No TCP connection for {:?}", msg.destination);
+                    }
+                }
+            });
+        }
+
+        for stream in listener.incoming() {
+            let stream = match stream {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("TCP accept error: {:?}", e);
+                    continue;
+                }
+            };
+
+            let peer = match stream.peer_addr() {
+                Ok(a) => a,
+                Err(e) => {
+                    warn!("TCP peer_addr error: {:?}", e);
+                    continue;
+                }
+            };
+
+            let destination = match stream.local_addr() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+
+            let _ = stream.set_nodelay(true);
+
+            info!("Accepted TCP connection from {:?}", peer);
+
+            let (writer_tx, writer_rx) = mpsc::channel::<Vec<u8>>();
+            connections
+                .lock()
+                .expect("connections lock")
+                .insert(peer, writer_tx);
+
+            let read_stream = match stream.try_clone() {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("TCP try_clone error: {:?}", e);
+                    connections.lock().expect("connections lock").remove(&peer);
+                    continue;
+                }
+            };
+
+            start_tcp_read_thread(read_stream, peer, destination, tcp_ingress_tx.clone(), connections.clone());
+            start_tcp_write_thread(stream, peer, writer_rx, connections.clone());
+        }
+    });
+}
+
+fn start_tcp_read_thread(
+    mut stream: TcpStream,
+    source: SocketAddr,
+    destination: SocketAddr,
+    tcp_ingress_tx: mpsc::Sender<TcpIngress>,
+    connections: Arc<Mutex<std::collections::HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>>,
+) {
+    thread::spawn(move || {
+        loop {
+            match read_rfc4571_frame(&mut stream) {
+                Ok(Some(data)) => {
+                    let ingress = TcpIngress {
+                        source,
+                        destination,
+                        data,
+                    };
+                    if tcp_ingress_tx.send(ingress).is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => break, // clean EOF
+                Err(e) => {
+                    debug!("TCP read error from {:?}: {:?}", source, e);
+                    break;
+                }
+            }
+        }
+
+        let _ = connections.lock().map(|mut m| m.remove(&source));
+    });
+}
+
+fn start_tcp_write_thread(
+    mut stream: TcpStream,
+    destination: SocketAddr,
+    writer_rx: mpsc::Receiver<Vec<u8>>,
+    connections: Arc<Mutex<std::collections::HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>>,
+) {
+    thread::spawn(move || {
+        while let Ok(data) = writer_rx.recv() {
+            if let Err(e) = write_rfc4571_frame(&mut stream, &data) {
+                debug!("TCP write error to {:?}: {:?}", destination, e);
+                break;
+            }
+        }
+        let _ = connections.lock().map(|mut m| m.remove(&destination));
+    });
+}
+
+fn read_rfc4571_frame(stream: &mut TcpStream) -> std::io::Result<Option<Vec<u8>>> {
+    let mut len_buf = [0u8; 2];
+    match stream.read_exact(&mut len_buf) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e),
+    }
+
+    let len = u16::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(Some(Vec::new()));
+    }
+
+    let mut data = vec![0u8; len];
+    stream.read_exact(&mut data)?;
+    Ok(Some(data))
+}
+
+fn write_rfc4571_frame(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
+    let len: u16 = data
+        .len()
+        .try_into()
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "frame too large"))?;
+    stream.write_all(&len.to_be_bytes())?;
+    stream.write_all(data)?;
+    Ok(())
 }
 
 /// Events propagated between client.

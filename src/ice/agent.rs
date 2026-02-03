@@ -357,7 +357,7 @@ impl IceAgent {
     /// Sets the local ice credentials.
     pub fn set_local_credentials(&mut self, r: IceCreds) {
         if self.local_credentials != r {
-            debug!("Set local credentials: {:?}", Pii(&r));
+            info!("Set local credentials: {:?}", Pii(&r));
             self.local_credentials = r;
         }
     }
@@ -372,7 +372,7 @@ impl IceAgent {
     pub fn set_initial_stun_rto(&mut self, timeout: Duration) {
         self.timing_config.initial_rto = timeout;
 
-        debug!("initial_rto = {timeout:?}");
+        info!("initial_rto = {timeout:?}");
 
         self.bust_candidate_pair_timeout_caches();
     }
@@ -390,7 +390,7 @@ impl IceAgent {
     pub fn set_max_stun_rto(&mut self, timeout: Duration) {
         self.timing_config.max_rto = timeout;
 
-        debug!("max_rto = {timeout:?}");
+        info!("max_rto = {timeout:?}");
 
         self.bust_candidate_pair_timeout_caches();
     }
@@ -401,7 +401,7 @@ impl IceAgent {
     pub fn set_max_stun_retransmits(&mut self, num: usize) {
         self.timing_config.max_retransmits = num;
 
-        debug!("max_retransmits = {num}");
+        info!("max_retransmits = {num}");
     }
 
     /// Sets the local preference calculation.
@@ -451,7 +451,7 @@ impl IceAgent {
     /// Sets the remote ice credentials.
     pub fn set_remote_credentials(&mut self, r: IceCreds) {
         if self.remote_credentials.as_ref() != Some(&r) {
-            debug!("Set remote credentials: {:?}", Pii(&r));
+            info!("Set remote credentials: {:?}", Pii(&r));
             self.remote_credentials = Some(r);
         }
     }
@@ -548,7 +548,7 @@ impl IceAgent {
         if self.ice_lite {
             // Reject all non-host candidates.
             if c.kind() != CandidateKind::Host {
-                debug!("Reject non-host candidate due to ice-lite mode: {:?}", c);
+                info!("Reject non-host candidate due to ice-lite mode: {:?}", c);
                 return None;
             }
         }
@@ -563,7 +563,7 @@ impl IceAgent {
 
         // Delegate local preference calculation to pluggable algo.
         let pref = self.local_preference.0.calculate(&c, same_kind);
-        trace!("Calculated local preference: {}", pref);
+        info!("Calculated local preference: {}", pref);
         c.set_local_preference(pref);
 
         // "Adopt" any incoming candidate by setting our current ufrag.
@@ -582,13 +582,13 @@ impl IceAgent {
 
         let local_idx = if let Some((idx, other)) = maybe_redundant {
             if other.discarded() && c.kind() == other.kind() && c.raddr() == other.raddr() {
-                debug!("Re-enable previously discarded local: {:?}", other);
+                info!("Re-enable previously discarded local: {:?}", other);
                 other.set_discarded(false);
                 idx
             } else {
                 if c.prio() < other.prio() {
                     // The new candidate is not better than what we already got.
-                    debug!(
+                    info!(
                         "Reject redundant candidate, current: {:?} rejected: {:?}",
                         Pii(&other),
                         Pii(&c)
@@ -597,7 +597,7 @@ impl IceAgent {
                 }
 
                 // Stop using the current candidate in favor of the new one.
-                debug!(
+                info!(
                     "Replace redundant candidate, current: {:?} replaced with: {:?}",
                     Pii(&other),
                     Pii(&c)
@@ -605,12 +605,12 @@ impl IceAgent {
                 other.set_discarded(true);
                 self.discard_candidate_pairs_by_local(idx);
 
-                debug!("Add local candidate: {:?}", Pii(&c));
+                info!("Add local candidate: {:?}", Pii(&c));
                 self.local_candidates.push(c);
                 self.local_candidates.len() - 1
             }
         } else {
-            debug!("Add local candidate: {:?}", Pii(&c));
+            info!("Add local candidate: {:?}", Pii(&c));
             self.local_candidates.push(c);
             self.local_candidates.len() - 1
         };
@@ -649,14 +649,14 @@ impl IceAgent {
         // This is a a:rtcp-mux-only implementation. The only component
         // we accept is 1 for RTP.
         if c.component_id() != 1 {
-            debug!("Reject candidate for component other than 1: {:?}", Pii(&c));
+            info!("Reject candidate for component other than 1: {:?}", Pii(&c));
             return;
         }
 
         if let Some(creds) = &self.remote_credentials {
             if let Some(ufrag) = c.ufrag() {
                 if ufrag != creds.ufrag {
-                    debug!(
+                    info!(
                         "Reject candidate with ufrag mismatch: {} != {}",
                         Pii(&ufrag),
                         Pii(&creds.ufrag)
@@ -678,7 +678,7 @@ impl IceAgent {
             Some((_, o)) if !o.discarded() => {
                 // Existing non-discarded candidate in viable pair, ignore
                 // Discarded candidates and candidates not in a viable pair are handled below
-                trace!("Ignoring candidate({c:?}) that exactly matches existing non-discarded candidate");
+                info!("Ignoring candidate({c:?}) that exactly matches existing non-discarded candidate");
                 return;
             }
             Some((i, o)) if o.discarded() => Some(i),
@@ -700,7 +700,7 @@ impl IceAgent {
         let remote_idx = if let Some((idx, existing)) = existing_prflx {
             // If any subsequent candidate exchanges contain this peer-reflexive
             // candidate, it will signal the actual foundation for the candidate.
-            debug!(
+            info!(
                 "Replace peer reflexive candidate, current: {:?} replaced with: {:?}",
                 Pii(&existing),
                 Pii(&c)
@@ -715,11 +715,11 @@ impl IceAgent {
             });
 
             if let Some((idx, other)) = existing_discarded {
-                debug!("Re-enable previously discarded remote: {:?}", Pii(&other));
+                info!("Re-enable previously discarded remote: {:?}", Pii(&other));
                 other.set_discarded(false);
                 idx
             } else {
-                debug!("Add remote candidate: {:?}", Pii(&c));
+                info!("Add remote candidate: {:?}", Pii(&c));
                 self.remote_candidates.push(c);
                 self.remote_candidates.len() - 1
             }
@@ -760,7 +760,7 @@ impl IceAgent {
                 let mut pair =
                     CandidatePair::new(*local_idx, local.kind(), *remote_idx, remote.kind(), prio);
 
-                trace!("Form pair local: {:?} remote: {:?}", local, remote);
+                info!("Form pair local: {:?} remote: {:?}", local, remote);
 
                 // The agent prunes each checklist.  This is done by removing a
                 // candidate pair if it is redundant with a higher-priority candidate
@@ -781,7 +781,7 @@ impl IceAgent {
                         if check.prio() >= pair.prio() {
                             // skip this new pair since there is a redundant pair already in the
                             // list with higher/equal priority.
-                            debug!(
+                            info!(
                                 "Reject redundant pair, current: {:?} rejected: {:?}",
                                 Pii(&check),
                                 Pii(&pair)
@@ -790,14 +790,14 @@ impl IceAgent {
                             // replace the existing candidate pair, since the new one got a higher prio.
                             pair.copy_nominated_and_success_state(&self.candidate_pairs[check_idx]);
 
-                            debug!(
+                            info!(
                                 "Replace redundant pair, current: {:?} replaced with: {:?}",
                                 Pii(&check),
                                 Pii(&pair)
                             );
 
                             if self.ice_lite {
-                                debug!("Retain incoming binding requests for pair");
+                                info!("Retain incoming binding requests for pair");
                                 pair.copy_remote_binding_requests(&self.candidate_pairs[check_idx]);
                             }
 
@@ -811,7 +811,7 @@ impl IceAgent {
                     }
                 }
 
-                debug!("Add new pair {:?}", Pii(&pair));
+                info!("Add new pair {:?}", Pii(&pair));
 
                 // This is not a redundant pair, add it.
                 self.candidate_pairs.push(pair);
@@ -839,7 +839,7 @@ impl IceAgent {
 
         while self.candidate_pairs.len() > max {
             let pair = self.candidate_pairs.pop();
-            debug!("Remove overflow pair {:?}", Pii(&pair));
+            info!("Remove overflow pair {:?}", Pii(&pair));
         }
     }
 
@@ -861,7 +861,7 @@ impl IceAgent {
                 && v.kind() == c.kind()
         }) {
             if !other.discarded() {
-                debug!("Local candidate to discard {:?}", Pii(&other));
+                info!("Local candidate to discard {:?}", Pii(&other));
                 other.set_discarded(true);
                 self.discard_candidate_pairs_by_local(idx);
                 return true;
@@ -880,14 +880,14 @@ impl IceAgent {
             })
         {
             if !other.discarded() {
-                debug!("Remote candidate to discard {:?}", Pii(&other));
+                info!("Remote candidate to discard {:?}", Pii(&other));
                 other.set_discarded(true);
                 self.discard_candidate_pairs_by_remote(idx);
                 return true;
             }
         }
 
-        debug!("No local or remote candidate found: {:?}", Pii(&c));
+        info!("No local or remote candidate found: {:?}", Pii(&c));
         false
     }
 
@@ -932,13 +932,13 @@ impl IceAgent {
 
     /// Discard candidate pairs that contain the candidate identified by a local index.
     fn discard_candidate_pairs_by_local(&mut self, local_idx: usize) {
-        trace!("Discard pairs for local candidate index: {:?}", local_idx);
+        info!("Discard pairs for local candidate index: {:?}", local_idx);
         self.candidate_pairs.retain(|c| c.local_idx() != local_idx);
     }
 
     /// Discard candidate pairs that contain the candidate identified by a remote index.
     fn discard_candidate_pairs_by_remote(&mut self, remote: usize) {
-        trace!("Discard pairs for remote candidate index: {:?}", remote);
+        info!("Discard pairs for remote candidate index: {:?}", remote);
         self.candidate_pairs.retain(|c| c.remote_idx() != remote);
     }
 
@@ -949,7 +949,7 @@ impl IceAgent {
     /// For binding requests, if no remote credentials have been set using
     /// `set_remote_credentials`, the remote ufrag is not checked.
     pub fn accepts_message(&self, message: &StunMessage<'_>) -> bool {
-        trace!("Check if accepts message: {:?}", message);
+        info!("Check if accepts message: {:?}", message);
 
         let sha1_hmac =
             |key: &[u8], payloads: &[&[u8]]| self.sha1_hmac_provider.sha1_hmac(key, payloads);
@@ -960,9 +960,9 @@ impl IceAgent {
 
             // The integrity is always the last thing we check
             if integrity_passed {
-                trace!("Message accepted");
+                info!("Message accepted");
             } else {
-                trace!("Message rejected, integrity check failed");
+                info!("Message rejected, integrity check failed");
             }
             integrity_passed
         };
@@ -985,7 +985,7 @@ impl IceAgent {
 
                 let local_creds = self.local_credentials();
                 if local != local_creds.ufrag {
-                    trace!(
+                    info!(
                         "Message rejected, local user mismatch: {} != {}",
                         local,
                         local_creds.ufrag
@@ -995,7 +995,7 @@ impl IceAgent {
 
                 if let Some(remote_creds) = &self.remote_credentials {
                     if remote != remote_creds.ufrag {
-                        trace!(
+                        info!(
                             "Message rejected, remote user mismatch: {} != {}",
                             remote,
                             remote_creds.ufrag
@@ -1013,7 +1013,7 @@ impl IceAgent {
                     .any(|pair| pair.has_binding_attempt(message.trans_id()));
 
                 if !belongs_to_a_candidate_pair {
-                    trace!("Message rejected, transaction ID does not belong to any of our candidate pairs");
+                    info!("Message rejected, transaction ID does not belong to any of our candidate pairs");
                     return false;
                 }
 
@@ -1021,12 +1021,12 @@ impl IceAgent {
             }
             (StunMethod::Binding, StunClass::Unknown) => {
                 // Without a known class, it's impossible to know how to validate the message
-                trace!("Message rejected, unknown STUN class");
+                info!("Message rejected, unknown STUN class");
                 false
             }
             (StunMethod::Unknown, _) => {
                 // Without a known method, it's impossible to know how to validate the message
-                trace!("Message rejected, unknown STUN method");
+                info!("Message rejected, unknown STUN method");
                 false
             }
             (
@@ -1039,7 +1039,7 @@ impl IceAgent {
                 _,
             ) => {
                 // Unexpected TURN related message
-                trace!("Message rejected, TURN method({method:?}) unexpected in this context");
+                info!("Message rejected, TURN method({method:?}) unexpected in this context");
                 false
             }
         }
@@ -1049,12 +1049,12 @@ impl IceAgent {
     ///
     /// Will not be used if [`IceAgent::accepts_message`] returns false.
     pub fn handle_packet(&mut self, now: Instant, packet: StunPacket) -> bool {
-        trace!("Handle receive: {:?}", &packet.message);
+        info!("Handle receive: {} from {}: {:?}",packet.proto, packet.source, &packet.message);
 
         // Regardless of whether we have remote_creds at this point, we can
         // at least check the message integrity.
         if !self.accepts_message(&packet.message) {
-            debug!("Message not accepted");
+            info!("Message not accepted");
             return false;
         }
 
@@ -1095,14 +1095,14 @@ impl IceAgent {
             while let Some(peek) = queue.front() {
                 if now - peek.now >= self.timing_config.timeout() {
                     let r = queue.pop_front();
-                    trace!("Drop too old enqueued STUN request: {:?}", r.unwrap());
+                    info!("Drop too old enqueued STUN request: {:?}", r.unwrap());
                 } else {
                     break;
                 }
             }
 
             if let Some(req) = self.stun_server_queue.pop_front() {
-                debug!("Handle enqueued STUN request: {:?}", Pii(&req));
+                info!("Handle enqueued STUN request: {:?}", Pii(&req));
                 self.stun_server_handle_request(req);
                 return;
             }
@@ -1121,7 +1121,7 @@ impl IceAgent {
                 p.is_still_possible(now, &self.timing_config)
             };
             if !keep {
-                debug!("Remove failed pair: {:?}", Pii(&p));
+                info!("Remove failed pair: {:?}", Pii(&p));
                 any_pruned = true;
             }
             keep
@@ -1132,7 +1132,7 @@ impl IceAgent {
         }
 
         if self.remote_credentials.is_none() {
-            trace!("Stop timeout due to missing remote credentials");
+            info!("Stop timeout due to missing remote credentials");
             return;
         }
 
@@ -1162,10 +1162,10 @@ impl IceAgent {
         if let Some((idx, deadline)) = next {
             if now >= deadline {
                 let pair = &self.candidate_pairs[idx];
-                trace!("Handle next triggered pair: {:?}", pair);
+                info!("Handle next triggered pair: {:?}", pair);
                 self.stun_client_binding_request(now, idx);
             } else {
-                // trace!("Next triggered pair is in the future: {:?}", deadline - now);
+                // info!("Next triggered pair is in the future: {:?}", deadline - now);
             }
         }
     }
@@ -1177,7 +1177,7 @@ impl IceAgent {
             if x.contents.len() > DATAGRAM_MTU_WARN {
                 warn!("ICE above MTU {}: {}", DATAGRAM_MTU_WARN, x.contents.len());
             }
-            trace!("Poll transmit: {:?}", x);
+            info!("Poll transmit: {:?}", x);
         }
         x
     }
@@ -1237,7 +1237,7 @@ impl IceAgent {
             self.stats.nomination_send_count += 1;
         }
 
-        trace!("Enqueueing event: {:?}", event);
+        info!("Enqueueing event: {:?}", event);
         self.events.push_back(event);
     }
 
@@ -1245,7 +1245,7 @@ impl IceAgent {
     pub fn poll_event(&mut self) -> Option<IceAgentEvent> {
         let x = self.events.pop_front();
         if x.is_some() {
-            trace!("Poll event: {:?}", x);
+            info!("Poll event: {:?}", x);
         }
         x
     }
@@ -1259,7 +1259,7 @@ impl IceAgent {
         let use_candidate = message.use_candidate();
 
         if use_candidate {
-            trace!("Binding request sent USE-CANDIDATE");
+            info!("Binding request sent USE-CANDIDATE");
         }
 
         let trans_id = message.trans_id();
@@ -1283,7 +1283,7 @@ impl IceAgent {
         if self.remote_credentials.is_some() {
             self.stun_server_handle_request(req);
         } else {
-            debug!(
+            info!(
                 "Enqueue STUN request due to missing remote credentials: {:?}",
                 Pii(&req)
             );
@@ -1298,7 +1298,7 @@ impl IceAgent {
             // This is some denial-of-service attack protection.
             while queue.len() > 100 {
                 let r = queue.pop_front();
-                debug!("Remove overflow STUN request {:?}", Pii(&r));
+                info!("Remove overflow STUN request {:?}", Pii(&r));
             }
 
             // If this happens, the agent MUST
@@ -1317,7 +1317,7 @@ impl IceAgent {
         if req.remote_ufrag != remote_creds.ufrag {
             // this check can be delayed due to receiving STUN bind requests before we
             // get the exchange on the signal level.
-            debug!(
+            info!(
                 "STUN request rejected, remote user mismatch (enqueued): {} != {}",
                 Pii(&req.remote_ufrag),
                 Pii(&remote_creds.ufrag)
@@ -1327,7 +1327,7 @@ impl IceAgent {
 
         if req.use_candidate && self.controlling {
             // the other side is not controlling, and it sent USE-CANDIDATE. that's wrong.
-            debug!("STUN request rejected, USE-CANDIDATE when local is controlling");
+            info!("STUN request rejected, USE-CANDIDATE when local is controlling");
             return;
         }
 
@@ -1346,7 +1346,7 @@ impl IceAgent {
             .max_by_key(|(_, c)| c.prio());
 
         let remote_idx = if let Some((idx, _)) = found_in_remote {
-            trace!("Remote candidate for STUN request found");
+            info!("Remote candidate for STUN request found");
             idx
         } else {
             let maybe_discarded = self
@@ -1357,7 +1357,7 @@ impl IceAgent {
             if maybe_discarded {
                 // The remote has been discarded, we do not want to create a
                 // peer reflexive in this case.
-                trace!("STUN request ignored because remote candidate is discarded");
+                info!("STUN request ignored because remote candidate is discarded");
                 return;
             }
 
@@ -1382,7 +1382,7 @@ impl IceAgent {
                 self.local_credentials.ufrag.clone(),
             );
 
-            debug!(
+            info!(
                 "Created peer reflexive remote candidate from STUN request: {:?}",
                 Pii(&c)
             );
@@ -1411,7 +1411,7 @@ impl IceAgent {
                 // candidate for the local interface. We are network-connected application
                 // so we need to handle this gracefully: Log a message and discard the packet.
 
-                debug!(
+                info!(
                     "Discarding STUN request on unknown interface: {}",
                     Pii(req.destination)
                 );
@@ -1426,7 +1426,7 @@ impl IceAgent {
 
         if let Some(pair) = maybe_pair {
             // When the pair is already on the checklist:
-            trace!("Found existing pair for STUN request: {:?}", pair);
+            info!("Found existing pair for STUN request: {:?}", pair);
 
             // TODO: The spec has all these ideas about resetting to Waiting state
             // for the candidate pair. I think that's to do speeding up the triggered
@@ -1449,7 +1449,7 @@ impl IceAgent {
             // *  The pair is enqueued into the triggered-check queue.
             let pair = CandidatePair::new(local_idx, local.kind(), remote_idx, remote.kind(), prio);
 
-            debug!("Created new pair for STUN request: {:?}", Pii(&pair));
+            info!("Created new pair for STUN request: {:?}", Pii(&pair));
 
             self.candidate_pairs.push(pair);
             self.candidate_pairs.sort();
@@ -1487,7 +1487,7 @@ impl IceAgent {
 
         let reply = StunMessage::binding_reply(req.trans_id, req.source);
 
-        trace!(
+        info!(
             "Send STUN reply: {} -> {} {:?}",
             local_addr,
             remote_addr,
@@ -1536,7 +1536,7 @@ impl IceAgent {
             use_candidate,
         );
 
-        trace!(
+        info!(
             "Send STUN request: {} -> {} {:?}",
             local.base(),
             remote.addr(),
@@ -1578,7 +1578,7 @@ impl IceAgent {
             // binding response came in "too late", after we discarded the
             // pair for some reason.
             None => {
-                debug!("No pair found for STUN response: {:?}", message);
+                info!("No pair found for STUN response: {:?}", message);
                 return;
             }
         };
@@ -1603,7 +1603,7 @@ impl IceAgent {
             // sent the request from. This might happen for hosts with asymmetric
             // routing, traffic leaving on one interface and responses coming back
             // on another.
-            trace!(
+            info!(
                 "Found local candidate for mapped address: {}",
                 mapped_address
             );
@@ -1637,7 +1637,7 @@ impl IceAgent {
                 self.local_credentials.ufrag.clone(),
             );
 
-            debug!(
+            info!(
                 "Created local peer reflexive candidate for mapped address: {}",
                 Pii(&mapped_address)
             );
@@ -1697,7 +1697,7 @@ impl IceAgent {
                     return;
                 }
             }
-            trace!("Nominating best candidate");
+            info!("Nominating best candidate");
 
             if !best_prio.is_nominated() && (self.controlling || self.ice_lite) {
                 // ice lite progresses pair to success straight away.
@@ -1726,7 +1726,7 @@ impl IceAgent {
 
     fn set_connection_state(&mut self, state: IceConnectionState, reason: &'static str) {
         if self.state != state {
-            debug!("State change ({}): {:?} -> {:?}", reason, self.state, state);
+            info!("State change ({}): {:?} -> {:?}", reason, self.state, state);
             self.state = state;
             self.emit_event(IceAgentEvent::IceConnectionStateChange(state));
         }
