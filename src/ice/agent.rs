@@ -657,7 +657,7 @@ impl IceAgent {
             if let Some(ufrag) = c.ufrag() {
                 if ufrag != creds.ufrag {
                     info!(
-                        "Reject candidate with ufrag mismatch: {} != {}",
+                        "Reject candidate with ufrag mismatch: {:?} != {:?}",
                         Pii(&ufrag),
                         Pii(&creds.ufrag)
                     );
@@ -960,9 +960,9 @@ impl IceAgent {
 
             // The integrity is always the last thing we check
             if integrity_passed {
-                info!("Message accepted");
+                trace!("Message accepted");
             } else {
-                info!("Message rejected, integrity check failed");
+                trace!("Message rejected, integrity check failed");
             }
             integrity_passed
         };
@@ -1121,7 +1121,9 @@ impl IceAgent {
                 p.is_still_possible(now, &self.timing_config)
             };
             if !keep {
-                info!("Remove failed pair: {:?}", Pii(&p));
+                let local = p.local_candidate(&self.local_candidates);
+                let remote = p.remote_candidate(&self.remote_candidates);
+                info!("Remove failed pair: {local:?} {remote:?} {:?}", Pii(&p));
                 any_pruned = true;
             }
             keep
@@ -1318,7 +1320,7 @@ impl IceAgent {
             // this check can be delayed due to receiving STUN bind requests before we
             // get the exchange on the signal level.
             info!(
-                "STUN request rejected, remote user mismatch (enqueued): {} != {}",
+                "STUN request rejected, remote user mismatch (enqueued): {:?} != {:?}",
                 Pii(&req.remote_ufrag),
                 Pii(&remote_creds.ufrag)
             );
@@ -1346,7 +1348,7 @@ impl IceAgent {
             .max_by_key(|(_, c)| c.prio());
 
         let remote_idx = if let Some((idx, _)) = found_in_remote {
-            info!("Remote candidate for STUN request found");
+            info!("Remote candidate for STUN request found {}", self.remote_candidates[idx]);
             idx
         } else {
             let maybe_discarded = self
@@ -1412,7 +1414,7 @@ impl IceAgent {
                 // so we need to handle this gracefully: Log a message and discard the packet.
 
                 info!(
-                    "Discarding STUN request on unknown interface: {}",
+                    "Discarding STUN request on unknown interface: {:?}",
                     Pii(req.destination)
                 );
                 return;
@@ -1425,8 +1427,10 @@ impl IceAgent {
             .find(|p| p.local_idx() == local_idx && p.remote_idx() == remote_idx);
 
         if let Some(pair) = maybe_pair {
+            let local = &self.local_candidates[local_idx];
+            let remote = &self.remote_candidates[remote_idx];
             // When the pair is already on the checklist:
-            info!("Found existing pair for STUN request: {:?}", pair);
+            info!("Found existing pair for STUN request: {local} {remote} {:?}", pair);
 
             // TODO: The spec has all these ideas about resetting to Waiting state
             // for the candidate pair. I think that's to do speeding up the triggered
@@ -1449,7 +1453,7 @@ impl IceAgent {
             // *  The pair is enqueued into the triggered-check queue.
             let pair = CandidatePair::new(local_idx, local.kind(), remote_idx, remote.kind(), prio);
 
-            info!("Created new pair for STUN request: {:?}", Pii(&pair));
+            info!("Created new pair for STUN request: {local} {remote} {:?}", Pii(&pair));
 
             self.candidate_pairs.push(pair);
             self.candidate_pairs.sort();
@@ -1638,7 +1642,7 @@ impl IceAgent {
             );
 
             info!(
-                "Created local peer reflexive candidate for mapped address: {}",
+                "Created local peer reflexive candidate for mapped address: {:?}",
                 Pii(&mapped_address)
             );
 

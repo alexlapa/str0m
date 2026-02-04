@@ -22,7 +22,29 @@
         let streamCam;
         let streamMic;
         let dataChannel;
-        let rtc = new RTCPeerConnection();
+        // let rtc = new RTCPeerConnection({
+        //     iceServers: [
+        //         // STUN server (for server-reflexive candidates)
+        //         {
+        //             urls: "stun:stun.l.google.com:19302"
+        //         },
+        //
+        //         // TURN server (for relay candidates)
+        //         {
+        //             urls: [
+        //                 "turn:turn.example.com:3478?transport=udp",
+        //                 "turn:turn.example.com:3478?transport=tcp"
+        //             ],
+        //             username: "turnUser",
+        //             credential: "turnPassword"
+        //         }
+        //     ],
+        //
+        //     // Optional but often useful
+        //     iceTransportPolicy: "all", // or "relay" to force TURN-only
+        //     bundlePolicy: "max-bundle",
+        //     rtcpMuxPolicy: "require"
+        // });
         rtc.oniceconnectionstatechange = () => {
             byId('ice_status').innerText = rtc.iceConnectionState;
             if (rtc.iceConnectionState == 'disconnected' || rtc.iceConnectionState == 'failed') {

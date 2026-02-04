@@ -1862,7 +1862,7 @@ impl Rtc {
     }
 
     fn do_handle_receive(&mut self, recv_time: Instant, r: net::Receive) -> Result<(), RtcError> {
-        trace!("IN {:?}", r);
+        info!("IN {:?}", r);
         use DatagramRecvInner::*;
 
         let bytes_rx = match r.contents.inner {

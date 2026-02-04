@@ -199,9 +199,14 @@ impl CandidatePair {
 
     pub fn is_ice_lite_alive(&self, now: Instant) -> bool {
         let Some(t) = self.remote_binding_request_time else {
+            info!("is_ice_lite_alive remote_binding_request_time is NONE");
             return true; // No timestamp yet = hasn't had a chance to fail
         };
-        now - t < RECENT_BINDING_REQUEST
+        let live = now - t < RECENT_BINDING_REQUEST;
+        if !live {
+            info!("is_ice_lite_alive is FALSE ({}ms)", (now - t).as_millis());
+        }
+        live
     }
 
     pub fn is_nominated(&self) -> bool {

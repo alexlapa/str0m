@@ -202,7 +202,7 @@ fn run(
             } else {
                 // This is quite common because we don't get the Rtc instance via the mpsc channel
                 // quickly enough before the browser send the first STUN.
-                debug!("No client accepts UDP input: {:?}", input);
+                error!("No client accepts UDP input: {:?}", input);
             }
         }
 
@@ -239,7 +239,7 @@ fn drain_tcp_ingress(tcp_ingress_rx: &Receiver<TcpIngress>, clients: &mut [Clien
         if let Some(client) = clients.iter_mut().find(|c| c.accepts(&input)) {
             client.handle_input(input);
         } else {
-            debug!("No client accepts TCP input: source={:?} destination={:?}", source, destination);
+            error!("No client accepts TCP input: source={:?} destination={:?}", source, destination);
         }
     }
 }
