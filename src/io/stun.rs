@@ -116,6 +116,7 @@ pub struct StunMessage<'a> {
 impl<'a> StunMessage<'a> {
     /// Parse a STUN message from a slice of bytes.
     pub fn parse(buf: &[u8]) -> Result<StunMessage, StunError> {
+        info!("StunMessage raw {:?}", buf);
         if buf.len() < 4 {
             return Err(StunError::Parse("Buffer too short".into()));
         }

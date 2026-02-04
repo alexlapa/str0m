@@ -22,7 +22,7 @@
         let streamCam;
         let streamMic;
         let dataChannel;
-        // let rtc = new RTCPeerConnection({
+        let rtc = new RTCPeerConnection({
         //     iceServers: [
         //         // STUN server (for server-reflexive candidates)
         //         {
@@ -44,7 +44,7 @@
         //     iceTransportPolicy: "all", // or "relay" to force TURN-only
         //     bundlePolicy: "max-bundle",
         //     rtcpMuxPolicy: "require"
-        // });
+        });
         rtc.oniceconnectionstatechange = () => {
             byId('ice_status').innerText = rtc.iceConnectionState;
             if (rtc.iceConnectionState == 'disconnected' || rtc.iceConnectionState == 'failed') {
